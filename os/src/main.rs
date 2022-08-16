@@ -41,7 +41,6 @@ fn clear_bss() {
 pub fn rust_main() -> ! {
     clear_bss();
     console::init();
-    println!("[kernel] Hello, world!");
     info!("[kernel] Hello, world!");
     trap::init();
     mm::init();

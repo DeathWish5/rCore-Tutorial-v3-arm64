@@ -65,7 +65,7 @@ clean:
 	@cargo clean
 
 disasm:
-	@$(OBJDUMP) $(DISASM) $(KERNEL_ELF) | less
+	@$(OBJDUMP) $(DISASM) $(KERNEL_ELF) > disasm.txt
 
 run: run-inner
 

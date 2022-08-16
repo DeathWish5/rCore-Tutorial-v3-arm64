@@ -3,17 +3,29 @@
 #![feature(panic_info_message)]
 #![feature(alloc_error_handler)]
 
-extern crate alloc;
-
 #[macro_use]
 pub mod console;
 mod lang_items;
 mod syscall;
 
-extern crate buddy_system_allocator;
+extern crate alloc;
+#[macro_use]
+extern crate bitflags;
 
 use buddy_system_allocator::LockedHeap;
 use syscall::*;
+
+const USER_HEAP_SIZE: usize = 32768;
+
+static mut HEAP_SPACE: [u8; USER_HEAP_SIZE] = [0; USER_HEAP_SIZE];
+
+#[global_allocator]
+static HEAP: LockedHeap<32> = LockedHeap::<32>::empty();
+
+#[alloc_error_handler]
+pub fn handle_alloc_error(layout: core::alloc::Layout) -> ! {
+    panic!("Heap allocation error, layout = {:?}", layout);
+}
 
 #[no_mangle]
 #[link_section = ".text.entry"]
@@ -31,21 +43,7 @@ fn main() -> i32 {
     panic!("Cannot find main!");
 }
 
-const USER_HEAP_SIZE: usize = 32768;
-
-static mut HEAP_SPACE: [u8; USER_HEAP_SIZE] = [0; USER_HEAP_SIZE];
-
-const ORDER: usize = 32;
-
-#[global_allocator]
-static HEAP: LockedHeap<ORDER> = LockedHeap::<ORDER>::empty();
-
-#[alloc_error_handler]
-pub fn handle_alloc_error(layout: core::alloc::Layout) -> ! {
-    panic!("Heap allocation error, layout = {:?}", layout);
-}
-
-bitflags::bitflags! {
+bitflags! {
     pub struct OpenFlags: u32 {
         const RDONLY = 0;
         const WRONLY = 1 << 0;
@@ -58,43 +56,33 @@ bitflags::bitflags! {
 pub fn open(path: &str, flags: OpenFlags) -> isize {
     sys_open(path, flags.bits)
 }
-
 pub fn close(fd: usize) -> isize {
     sys_close(fd)
 }
-
 pub fn read(fd: usize, buf: &mut [u8]) -> isize {
     sys_read(fd, buf)
 }
-
 pub fn write(fd: usize, buf: &[u8]) -> isize {
     sys_write(fd, buf)
 }
-
 pub fn exit(exit_code: i32) -> ! {
-    sys_exit(exit_code)
+    sys_exit(exit_code);
 }
-
 pub fn sched_yield() -> isize {
     sys_yield()
 }
-
 pub fn get_time() -> isize {
     sys_get_time()
 }
-
 pub fn getpid() -> isize {
     sys_getpid()
 }
-
 pub fn fork() -> isize {
     sys_fork()
 }
-
 pub fn exec(path: &str) -> isize {
     sys_exec(path)
 }
-
 pub fn wait(exit_code: &mut i32) -> isize {
     loop {
         match sys_waitpid(-1, exit_code as *mut _) {

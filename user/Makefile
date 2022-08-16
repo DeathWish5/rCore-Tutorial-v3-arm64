@@ -7,7 +7,7 @@ APPS := $(wildcard $(APP_DIR)/*.rs)
 ELFS := $(patsubst $(APP_DIR)/%.rs, $(TARGET_DIR)/%, $(APPS))
 ASMS := $(patsubst %, %.asm, $(ELFS))
 
-BUILD_ARGS := --target $(TARGET) -Zbuild-std=core
+BUILD_ARGS := --target $(TARGET) -Zbuild-std=core,alloc
 ifeq ($(MODE), release)
   BUILD_ARGS += --release
 endif
@@ -15,7 +15,7 @@ endif
 OBJDUMP := rust-objdump --arch-name=$(ARCH) --print-imm-hex
 OBJCOPY := rust-objcopy --binary-architecture=$(ARCH)
 
-export RUSTFLAGS=-C target-feature=-neon
+export RUSTFLAGS=-C target-feature=-neon,-fp
 
 all: build
 

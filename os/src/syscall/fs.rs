@@ -17,7 +17,15 @@ pub fn sys_write(fd: usize, buf: UserInPtr<u8>, len: usize) -> isize {
         let file = file.clone();
         // release current task TCB manually to avoid multi-borrow
         drop(fd_table);
-        file.write(&buf.read_array::<CHUNK_SIZE>(len)[..len]) as isize
+        let mut count = 0;
+        while count < len {
+            let chunk_len = CHUNK_SIZE.min(len);
+            let chunk: [u8; CHUNK_SIZE] = unsafe { buf.add(count).read_array(chunk_len) };
+            let _len = file.write(&chunk[..chunk_len]);
+            assert_eq!(_len, chunk_len);
+            count += chunk_len;
+        }
+        count as isize
     } else {
         -1
     }
@@ -47,8 +55,9 @@ pub fn sys_read(fd: usize, mut buf: UserOutPtr<u8>, len: usize) -> isize {
 
 pub fn sys_open(path: UserInPtr<u8>, flags: u32) -> isize {
     let task = CurrentTask::get();
+    let path = path.as_c_str().unwrap();
     if let Some(inode) = open_file(
-        path.as_c_str().unwrap(),
+        path,
         OpenFlags::from_bits(flags).unwrap(),
     ) {
         let fd = task.alloc_fd();

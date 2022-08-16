@@ -1,12 +1,14 @@
 use super::{BlockDevice, BLOCK_SZ};
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
 use lazy_static::*;
 use spin::Mutex;
 /// Cached block inside memory
 pub struct BlockCache {
     /// cached block data
-    cache: [u8; BLOCK_SZ],
+    cache: Vec<u8>,
     /// underlying block id
     block_id: usize,
     /// underlying block device
@@ -18,7 +20,7 @@ pub struct BlockCache {
 impl BlockCache {
     /// Load a new BlockCache from disk.
     pub fn new(block_id: usize, block_device: Arc<dyn BlockDevice>) -> Self {
-        let mut cache = [0u8; BLOCK_SZ];
+        let mut cache = vec![0u8; BLOCK_SZ];
         block_device.read_block(block_id, &mut cache);
         Self {
             cache,

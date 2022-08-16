@@ -76,10 +76,6 @@ impl Log for SimpleLogger {
         if !self.enabled(record.metadata()) {
             return;
         }
-        if 1 == 1 {
-            print!("{}\n", *record.args());
-            return;
-        }
         let level = record.level();
         let target = record.target();
         let level_color = match level {

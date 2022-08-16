@@ -146,10 +146,9 @@ impl Inode {
             let mut v: Vec<String> = Vec::new();
             for i in 0..file_count {
                 let mut dirent = DirEntry::empty();
-                assert_eq!(
-                    disk_inode.read_at(i * DIRENT_SZ, dirent.as_bytes_mut(), &self.block_device,),
-                    DIRENT_SZ,
-                );
+                let len =
+                    disk_inode.read_at(i * DIRENT_SZ, dirent.as_bytes_mut(), &self.block_device);
+                assert_eq!(len, DIRENT_SZ);
                 v.push(String::from(dirent.name()));
             }
             v
