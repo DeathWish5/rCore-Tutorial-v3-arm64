@@ -8,9 +8,11 @@ use crate::config::PHYS_VIRT_OFFSET;
 const PA_1TB_BITS: usize = 40;
 const VA_MAX_BITS: usize = 48;
 
+#[repr(C)]
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct PhysAddr(usize);
 
+#[repr(C)]
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct VirtAddr(usize);
 

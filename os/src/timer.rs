@@ -3,8 +3,8 @@
 use cortex_a::registers::{CNTFRQ_EL0, CNTPCT_EL0, CNTP_CTL_EL0, CNTP_TVAL_EL0};
 use tock_registers::interfaces::{Readable, Writeable};
 
+use crate::arch::gicv2::irq_set_mask;
 use crate::config::TICKS_PER_SEC;
-use crate::gicv2::irq_set_mask;
 use crate::sync::LazyInit;
 
 const PHYS_TIMER_IRQ_NUM: usize = 30;

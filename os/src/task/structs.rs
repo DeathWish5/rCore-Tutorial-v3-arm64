@@ -6,7 +6,8 @@ use super::manager::{TaskLockedCell, TASK_MANAGER};
 use super::percpu::PerCpu;
 use super::switch::TaskContext;
 use crate::config::KERNEL_STACK_SIZE;
-use crate::loader;
+use crate::fs::{open_file, OpenFlags};
+use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{MemorySet, PhysAddr};
 use crate::sync::{LazyInit, Mutex};
 use crate::trap::TrapFrame;
@@ -42,6 +43,7 @@ pub struct Task {
     vm: Mutex<Option<MemorySet>>,
     pub parent: Mutex<Weak<Task>>,
     pub children: Mutex<Vec<Arc<Task>>>,
+    pub fd_table: Mutex<Vec<Option<Arc<dyn File + Send + Sync>>>>,
 }
 
 impl TaskId {
@@ -89,6 +91,14 @@ impl Task {
             vm: Mutex::new(None),
             parent: Mutex::new(Weak::default()),
             children: Mutex::new(Vec::new()),
+            fd_table: Mutex::new(alloc::vec![
+                // 0 -> stdin
+                Some(Arc::new(Stdin)),
+                // 1 -> stdout
+                Some(Arc::new(Stdout)),
+                // 2 -> stderr
+                Some(Arc::new(Stdout)),
+            ]),
         }
     }
 
@@ -121,9 +131,9 @@ impl Task {
     }
 
     pub fn new_user(path: &str) -> Arc<Self> {
-        let elf_data = loader::get_app_data_by_name(path).expect("new_user: no such app");
+        let elf_data = open_file(path, OpenFlags::RDONLY).expect("No such user program");
         let mut vm = MemorySet::new();
-        let (entry, ustack_top) = vm.load_user(elf_data);
+        let (entry, ustack_top) = vm.load_user(elf_data.read_all().as_slice());
 
         let mut t = Self::new_common(TaskId::alloc(), false);
         t.entry = EntryState::User(Box::new(TrapFrame::new_user(entry, ustack_top)));
@@ -146,7 +156,16 @@ impl Task {
             .get_mut()
             .init(task_entry as _, t.kstack.top(), vm.page_table_root());
         *t.vm.lock() = Some(vm);
-
+        // copy fd table
+        let mut new_fd_table: Vec<Option<Arc<dyn File + Send + Sync>>> = Vec::new();
+        for fd in self.fd_table.lock().iter() {
+            if let Some(file) = fd {
+                new_fd_table.push(Some(file.clone()));
+            } else {
+                new_fd_table.push(None);
+            }
+        }
+        *t.fd_table.lock() = new_fd_table;
         let t = Arc::new(t);
         self.add_child(&t);
         t
@@ -231,11 +250,11 @@ impl<'a> CurrentTask<'a> {
 
     pub fn exec(&self, path: &str, tf: &mut TrapFrame) -> isize {
         assert!(!self.is_kernel_task());
-        if let Some(elf_data) = loader::get_app_data_by_name(path) {
+        if let Some(elf_data) = open_file(path, OpenFlags::RDONLY) {
             let mut vm = self.vm.lock();
             let vm = vm.get_or_insert(MemorySet::new());
             vm.clear();
-            let (entry, ustack_top) = vm.load_user(elf_data);
+            let (entry, ustack_top) = vm.load_user(elf_data.read_all().as_slice());
             *tf = TrapFrame::new_user(entry, ustack_top);
             crate::arch::flush_tlb_all();
             0
@@ -262,6 +281,16 @@ impl<'a> CurrentTask<'a> {
             -2
         } else {
             -1
+        }
+    }
+
+    pub fn alloc_fd(&self) -> usize {
+        let mut fd_table = self.fd_table.lock();
+        if let Some(fd) = (0..fd_table.len()).find(|fd| fd_table[*fd].is_none()) {
+            fd
+        } else {
+            fd_table.push(None);
+            fd_table.len() - 1
         }
     }
 }

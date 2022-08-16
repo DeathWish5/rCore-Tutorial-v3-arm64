@@ -9,13 +9,10 @@ pub const USER_ASPACE_RANGE: core::ops::Range<usize> = 0..0x1_0000_0000_0000;
 pub const MEMORY_START: usize = 0x4000_0000;
 pub const MEMORY_END: usize = MEMORY_START + 0x800_0000;
 
-pub const MMIO_REGIONS: &[(usize, usize)] = &[
-    (0x0900_0000, 0x1000),   // PL011 UART
-    (0x0800_0000, 0x2_0000), // GICv2
-];
-
 pub const PHYS_VIRT_OFFSET: usize = 0xffff_0000_0000_0000;
 
 pub const MAX_CPUS: usize = 1;
 
 pub const TICKS_PER_SEC: u64 = 100;
+
+pub use crate::board::MMIO_REGIONS;

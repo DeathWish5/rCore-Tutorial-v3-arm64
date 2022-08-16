@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 #![allow(clippy::uninit_assumed_init)]
 
+use crate::config::USER_ASPACE_RANGE;
 use core::marker::PhantomData;
 use core::mem::{align_of, size_of, MaybeUninit};
-
-use crate::config::USER_ASPACE_RANGE;
+use core::result::Result;
 
 const fn uaccess_ok(vaddr: usize, size: usize) -> bool {
     vaddr != 0 && USER_ASPACE_RANGE.start <= vaddr && vaddr <= USER_ASPACE_RANGE.end - size
@@ -84,6 +84,15 @@ impl<T, P: Policy> UserPtr<T, P> {
         self.ptr
     }
 
+    pub fn as_slice(&self, len: usize) -> Result<&'static [T], &'static str> {
+        if len == 0 {
+            Ok(&[])
+        } else {
+            assert!(uaccess_ok(self.ptr as usize, len));
+            Ok(unsafe { core::slice::from_raw_parts(self.ptr, len) })
+        }
+    }
+
     pub unsafe fn add(&self, count: usize) -> Self {
         Self {
             ptr: self.ptr.add(count),
@@ -108,11 +117,23 @@ impl<T, P: ReadPolicy> UserPtr<T, P> {
     }
 }
 
+const C_STR_MAX_LEN: usize = 256;
+
 impl<P: ReadPolicy> UserPtr<u8, P> {
     pub fn read_str<const N: usize>(&self) -> ([u8; N], usize) {
         let mut buf: [u8; N] = unsafe { MaybeUninit::uninit().assume_init() };
         let len = unsafe { copy_from_user_str(buf.as_mut_ptr(), self.ptr, N - 1) };
         (buf, len)
+    }
+
+    pub fn as_str(&self, len: usize) -> Result<&'static str, &'static str> {
+        core::str::from_utf8(self.as_slice(len)?).map_err(|_| "Invalid Utf8")
+    }
+
+    // 从一个 C 风格的零结尾字符串构造一个字符切片。
+    /// Forms a zero-terminated string slice from a user pointer to a c style string.
+    pub fn as_c_str(&self) -> Result<&'static str, &'static str> {
+        self.as_str(unsafe { (0usize..).find(|&i| *self.ptr.add(i) == 0).unwrap() })
     }
 }
 

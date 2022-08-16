@@ -1,4 +1,4 @@
-use crate::psci::shutdown;
+use crate::arch::psci::shutdown;
 use core::panic::PanicInfo;
 
 #[panic_handler]

@@ -9,16 +9,17 @@
 extern crate alloc;
 
 #[macro_use]
+extern crate log;
+
+#[macro_use]
 mod console;
 mod arch;
+mod board;
 mod config;
-mod entry;
-mod gicv2;
+mod drivers;
+mod fs;
 mod lang_items;
-mod loader;
 mod mm;
-mod pl011;
-mod psci;
 mod sync;
 mod syscall;
 mod task;
@@ -39,16 +40,17 @@ fn clear_bss() {
 
 pub fn rust_main() -> ! {
     clear_bss();
+    console::init();
     println!("[kernel] Hello, world!");
+    info!("[kernel] Hello, world!");
     trap::init();
     mm::init();
-    println!("[kernel] back to world!");
+    info!("[kernel] back to world!");
     mm::remap_test();
 
-    gicv2::init();
+    arch::gicv2::init();
     timer::init();
-
+    fs::list_apps();
     task::init();
-    loader::list_apps();
     task::run();
 }

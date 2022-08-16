@@ -7,6 +7,8 @@ const SYSCALL_GETPID: usize = 172;
 const SYSCALL_FORK: usize = 220;
 const SYSCALL_EXEC: usize = 221;
 const SYSCALL_WAITPID: usize = 260;
+const SYSCALL_OPEN: usize = 56; // TODO
+const SYSCALL_CLOSE: usize = 57; // TODO
 
 mod fs;
 mod process;
@@ -28,6 +30,8 @@ pub fn syscall(syscall_id: usize, args: [usize; 3], tf: &mut TrapFrame) -> isize
         SYSCALL_FORK => sys_fork(tf),
         SYSCALL_EXEC => sys_exec(args[0].into(), tf),
         SYSCALL_WAITPID => sys_waitpid(args[0] as isize, args[1].into()),
+        SYSCALL_OPEN => sys_open(args[0].into(), args[1] as u32),
+        SYSCALL_CLOSE => sys_close(args[0]),
         _ => {
             println!("Unsupported syscall_id: {}", syscall_id);
             crate::task::CurrentTask::get().exit(-1);

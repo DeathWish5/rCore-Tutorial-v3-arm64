@@ -45,6 +45,17 @@ impl PhysFrame {
     }
 }
 
+/// allocate a frame
+pub fn frame_alloc() -> Option<PhysFrame> {
+    PhysFrame::alloc()
+}
+
+#[allow(dead_code)]
+/// deallocate a frame
+pub fn frame_dealloc(pf: PhysFrame) {
+    drop(pf);
+}
+
 impl Drop for PhysFrame {
     fn drop(&mut self) {
         FRAME_ALLOCATOR

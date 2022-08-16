@@ -15,7 +15,7 @@ endif
 OBJDUMP := rust-objdump --arch-name=$(ARCH) --print-imm-hex
 OBJCOPY := rust-objcopy --binary-architecture=$(ARCH)
 
-export RUSTFLAGS=-C target-feature=-neon,-fp
+export RUSTFLAGS=-C target-feature=-neon
 
 all: build
 
