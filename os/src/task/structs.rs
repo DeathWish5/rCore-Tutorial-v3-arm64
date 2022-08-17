@@ -2,8 +2,9 @@ use alloc::sync::{Arc, Weak};
 use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicI32, AtomicU8, AtomicUsize, Ordering};
 
-use super::manager::{TaskLockedCell, TASK_MANAGER};
+use super::manager::{TaskLockedCell, TASK_MANAGER, TASK_MAP};
 use super::percpu::PerCpu;
+use super::signal::{SignalActions, SignalFlags, MAX_SIG};
 use super::switch::TaskContext;
 use crate::config::KERNEL_STACK_SIZE;
 use crate::fs::{open_file, OpenFlags};
@@ -44,6 +45,22 @@ pub struct Task {
     pub parent: Mutex<Weak<Task>>,
     pub children: Mutex<Vec<Arc<Task>>>,
     pub fd_table: Mutex<Vec<Option<Arc<dyn File + Send + Sync>>>>,
+    pub signal: Mutex<SignalInner>,
+}
+
+pub struct SignalInner {
+    pub signals: SignalFlags,
+    pub signal_mask: SignalFlags,
+    // the signal which is being handling
+    pub handling_sig: Option<usize>,
+    // Signal actions
+    pub signal_actions: SignalActions,
+    // if the task is killed
+    pub killed: bool,
+    // if the task is frozen by a signal
+    pub frozen: bool,
+    pub mask_backup: Option<SignalFlags>,
+    pub trapframe_backup: Option<TrapFrame>,
 }
 
 impl TaskId {
@@ -99,6 +116,16 @@ impl Task {
                 // 2 -> stderr
                 Some(Arc::new(Stdout)),
             ]),
+            signal: Mutex::new(SignalInner {
+                signals: SignalFlags::empty(),
+                signal_mask: SignalFlags::empty(),
+                handling_sig: None,
+                signal_actions: SignalActions::default(),
+                killed: false,
+                frozen: false,
+                mask_backup: None,
+                trapframe_backup: None,
+            }),
         }
     }
 
@@ -169,6 +196,82 @@ impl Task {
         let t = Arc::new(t);
         self.add_child(&t);
         t
+    }
+
+    pub fn alloc_fd(self: &Arc<Self>, file: Option<Arc<dyn File + Send + Sync>>) -> usize {
+        let mut fd_table = self.fd_table.lock();
+        let fd = if let Some(fd) = (0..fd_table.len()).find(|fd| fd_table[*fd].is_none()) {
+            fd
+        } else {
+            fd_table.push(None);
+            fd_table.len() - 1
+        };
+        if let Some(file) = file {
+            fd_table[fd] = Some(file);
+        }
+        fd
+    }
+
+    pub fn set_singal(self: &Arc<Self>, signal: SignalFlags) {
+        let mut inner = self.signal.lock();
+        inner.signals |= signal;
+    }
+
+    pub fn singal_metadata(self: &Arc<Self>) -> (SignalFlags, Option<SignalFlags>) {
+        let inner = self.signal.lock();
+        let masked_signal = inner.signals & inner.signal_mask;
+        if let Some(sig) = inner.handling_sig {
+            let action_mask = inner.signal_actions.table[sig].mask;
+            (masked_signal, Some(action_mask))
+        } else {
+            (masked_signal, None)
+        }
+    }
+
+    fn kernel_signal_handler(self: &Arc<Self>, signal: SignalFlags) {
+        let mut inner = self.signal.lock();
+        match signal {
+            SignalFlags::SIGSTOP => {
+                inner.frozen = true;
+                inner.signals ^= SignalFlags::SIGSTOP;
+            }
+            SignalFlags::SIGCONT => {
+                if inner.signals.contains(SignalFlags::SIGCONT) {
+                    inner.signals ^= SignalFlags::SIGCONT;
+                    inner.frozen = false;
+                }
+            }
+            _ => {
+                info!(
+                    "[K] call_kernel_signal_handler:: current task sigflag {:?}",
+                    inner.signals
+                );
+                inner.killed = true;
+            }
+        }
+    }
+
+    fn user_signal_handler(self: &Arc<Self>, sig: usize, tf: &mut TrapFrame) {
+        let mut inner = self.signal.lock();
+        let handler = inner.signal_actions.table[sig].handler;
+        if handler != 0 {
+            // backup mask
+            inner.mask_backup = Some(inner.signal_mask);
+            // change current mask
+            inner.signal_mask = inner.signal_actions.table[sig].mask;
+            // handle flag
+            inner.handling_sig = Some(sig);
+            inner.signals ^= SignalFlags::from_bits(1 << sig).unwrap();
+            // backup and modify trapframe
+            inner.trapframe_backup = Some(*tf);
+            // set entry point
+            tf.elr = handler as _;
+            // set arg0
+            tf.r[0] = sig as _;
+        } else {
+            // default action
+            info!("[K] task/call_user_signal_handler: default action: ignore it or kill process");
+        }
     }
 
     pub fn is_kernel_task(&self) -> bool {
@@ -244,6 +347,7 @@ impl<'a> CurrentTask<'a> {
     }
 
     pub fn exit(&self, exit_code: i32) -> ! {
+        info!("Task {} exit with {}", self.id.as_usize(), exit_code);
         *self.vm.lock() = None; // drop memory set before lock
         TASK_MANAGER.lock().exit_current(self, exit_code)
     }
@@ -271,6 +375,7 @@ impl<'a> CurrentTask<'a> {
                 found_pid = true;
                 if t.state() == TaskState::Zombie {
                     let child = children.remove(idx);
+                    TASK_MAP.lock().remove(&child.pid().as_usize());
                     assert_eq!(Arc::strong_count(&child), 1);
                     *exit_code = child.exit_code();
                     return child.pid().as_usize() as isize;
@@ -284,14 +389,39 @@ impl<'a> CurrentTask<'a> {
         }
     }
 
-    pub fn alloc_fd(&self) -> usize {
-        let mut fd_table = self.fd_table.lock();
-        if let Some(fd) = (0..fd_table.len()).find(|fd| fd_table[*fd].is_none()) {
-            fd
-        } else {
-            fd_table.push(None);
-            fd_table.len() - 1
+    fn check_pending_signals(&self, tf: &mut TrapFrame) -> Option<SignalFlags> {
+        for sig in 0..(MAX_SIG + 1) {
+            let (masked_singal, handling_sig_mask) = self.singal_metadata();
+            let signal = SignalFlags::from_bits(1 << sig).unwrap();
+            if masked_singal.contains(signal)
+                && (handling_sig_mask == None || handling_sig_mask.unwrap().contains(signal))
+            {
+                if SignalFlags::KERNEL_SIGNAL.contains(signal) {
+                    // signal is a kernel signal
+                    self.kernel_signal_handler(signal);
+                } else {
+                    // signal is a user signal
+                    self.user_signal_handler(sig, tf);
+                }
+                return Some(signal);
+            }
         }
+        None
+    }
+
+    pub fn handle_signals(&self, tf: &mut TrapFrame) -> Option<(i32, &'static str)> {
+        loop {
+            self.check_pending_signals(tf);
+            let inner = self.signal.lock();
+            let frozen_flag = inner.frozen;
+            let killed_flag = inner.killed;
+            drop(inner);
+            if (!frozen_flag) || killed_flag {
+                break;
+            }
+            self.yield_now();
+        }
+        self.signal.lock().signals.check_error()
     }
 }
 

@@ -6,7 +6,10 @@
 #[macro_use]
 pub mod console;
 mod lang_items;
+mod signals;
 mod syscall;
+
+pub use signals::*;
 
 extern crate alloc;
 #[macro_use]
@@ -59,6 +62,9 @@ pub fn open(path: &str, flags: OpenFlags) -> isize {
 pub fn close(fd: usize) -> isize {
     sys_close(fd)
 }
+pub fn dup(fd: usize) -> isize {
+    sys_dup(fd)
+}
 pub fn read(fd: usize, buf: &mut [u8]) -> isize {
     sys_read(fd, buf)
 }
@@ -82,6 +88,9 @@ pub fn fork() -> isize {
 }
 pub fn exec(path: &str) -> isize {
     sys_exec(path)
+}
+pub fn pipe(pipe_fd: &mut [usize]) -> isize {
+    sys_pipe(pipe_fd)
 }
 pub fn wait(exit_code: &mut i32) -> isize {
     loop {
@@ -112,4 +121,24 @@ pub fn sleep(period_ms: usize) {
     while sys_get_time() < start + period_ms as isize {
         sys_yield();
     }
+}
+
+pub fn kill(pid: usize, signal: i32) -> isize {
+    sys_kill(pid, signal)
+}
+
+pub fn sigaction(
+    signum: i32,
+    action: *const SignalAction,
+    old_action: *const SignalAction,
+) -> isize {
+    sys_sigaction(signum, action, old_action)
+}
+
+pub fn sigprocmask(mask: u32) -> isize {
+    sys_sigprocmask(mask)
+}
+
+pub fn sigreturn() -> isize {
+    sys_sigreturn()
 }

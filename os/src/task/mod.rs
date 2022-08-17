@@ -1,14 +1,17 @@
 mod manager;
 mod percpu;
 mod schedule;
+mod signal;
 mod structs;
 mod switch;
 
-pub use structs::{CurrentTask, TaskId};
-
 use alloc::sync::Arc;
 
-use self::manager::TASK_MANAGER;
+pub use manager::pid2task;
+pub use signal::*;
+pub use structs::{CurrentTask, TaskId};
+
+use self::manager::{TASK_MANAGER, TASK_MAP};
 use self::structs::{Task, ROOT_TASK};
 
 pub fn init() {
@@ -46,6 +49,7 @@ pub fn init() {
 }
 
 pub fn spawn_task(task: Arc<Task>) {
+    TASK_MAP.lock().insert(task.pid().as_usize(), task.clone());
     TASK_MANAGER.lock().spawn(task);
 }
 

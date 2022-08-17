@@ -98,6 +98,13 @@ fn handle_sync_exception(tf: &mut TrapFrame) {
             );
         }
     }
+
+    let task = CurrentTask::get();
+    if let Some((errno, msg)) = task.handle_signals(tf) {
+        warn!("Error in handling signals {} {}", errno, msg);
+        task.exit(errno);
+    }
+    drop(task);
 }
 
 #[no_mangle]

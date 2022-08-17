@@ -1,3 +1,4 @@
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
 
@@ -132,9 +133,16 @@ impl<T> TaskLockedCell<T> {
     }
 }
 
+pub fn pid2task(id: usize) -> Option<Arc<Task>> {
+    TASK_MAP.lock().get(&id).map(|t| t.clone())
+}
+
 pub(super) static TASK_MANAGER: LazyInit<SpinNoIrqLock<TaskManager<SimpleScheduler>>> =
     LazyInit::new();
 
+pub(super) static TASK_MAP: LazyInit<SpinNoIrqLock<BTreeMap<usize, Arc<Task>>>> = LazyInit::new();
+
 pub(super) fn init() {
     TASK_MANAGER.init_by(SpinNoIrqLock::new(TaskManager::new(SimpleScheduler::new())));
+    TASK_MAP.init_by(SpinNoIrqLock::new(BTreeMap::new()));
 }

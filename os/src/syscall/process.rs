@@ -1,5 +1,5 @@
-use crate::mm::{UserInPtr, UserOutPtr};
-use crate::task::{spawn_task, CurrentTask};
+use crate::mm::{UserInOutPtr, UserInPtr, UserOutPtr};
+use crate::task::{pid2task, spawn_task, CurrentTask, SignalAction, SignalFlags, MAX_SIG};
 use crate::timer::get_time_ms;
 use crate::trap::TrapFrame;
 
@@ -42,4 +42,78 @@ pub fn sys_waitpid(pid: isize, mut exit_code_ptr: UserOutPtr<i32>) -> isize {
     let ret = CurrentTask::get().waitpid(pid, &mut exit_code);
     exit_code_ptr.write(exit_code);
     ret
+}
+
+pub fn sys_kill(pid: usize, signum: i32) -> isize {
+    if let Some(task) = pid2task(pid) {
+        if let Some(flag) = SignalFlags::from_bits(1 << signum) {
+            // insert the signal if legal
+            let mut inner = task.signal.lock();
+            if inner.signals.contains(flag) {
+                return -1;
+            }
+            inner.signals.insert(flag);
+            0
+        } else {
+            -1
+        }
+    } else {
+        -1
+    }
+}
+
+pub fn sys_sigprocmask(mask: u32) -> isize {
+    let task = CurrentTask::get();
+    let mut inner = task.signal.lock();
+    let old_mask = inner.signal_mask;
+    if let Some(flag) = SignalFlags::from_bits(mask) {
+        inner.signal_mask = flag;
+        old_mask.bits() as isize
+    } else {
+        -1
+    }
+}
+
+pub fn sys_sigretrun(tf: &mut TrapFrame) -> isize {
+    let task = CurrentTask::get();
+    let mut inner = task.signal.lock();
+    if let Some(backup) = inner.trapframe_backup.take() {
+        inner.handling_sig = None;
+        inner.signal_mask = inner.mask_backup.take().unwrap();
+        *tf = backup;
+        return 0;
+    }
+    -1
+}
+
+pub fn sys_sigaction(
+    signum: i32,
+    action: UserInPtr<SignalAction>,
+    mut old_action: UserInOutPtr<SignalAction>,
+) -> isize {
+    if signum as usize > MAX_SIG {
+        return -1;
+    }
+    if let Some(signal) = SignalFlags::from_bits(1 << signum) {
+        if action.is_null()
+            || old_action.is_null()
+            || signal == SignalFlags::SIGKILL
+            || signal == SignalFlags::SIGSTOP
+        {
+            return -1;
+        }
+        let task = CurrentTask::get();
+        let mut inner = task.signal.lock();
+        let old_kernel_action = inner.signal_actions.table[signum as usize];
+        if old_kernel_action.mask != SignalFlags::TRAP_QUIT {
+            old_action.write(old_kernel_action);
+        } else {
+            let mut action = old_action.read();
+            action.handler = old_kernel_action.handler;
+            old_action.write(action);
+        }
+        inner.signal_actions.table[signum as usize] = action.read();
+        return 0;
+    }
+    -1
 }

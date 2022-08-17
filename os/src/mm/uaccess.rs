@@ -65,17 +65,24 @@ pub struct UserPtr<T, P: Policy> {
 }
 
 impl<T, P: Policy> From<usize> for UserPtr<T, P> {
-    fn from(user_vadddr: usize) -> Self {
-        assert!(uaccess_ok(user_vadddr, 1));
-        assert!(user_vadddr % align_of::<T>() == 0);
+    fn from(user_vaddr: usize) -> Self {
         Self {
-            ptr: user_vadddr as *mut T,
+            ptr: user_vaddr as *mut T,
             _phantom: PhantomData,
         }
     }
 }
 
 impl<T, P: Policy> UserPtr<T, P> {
+    pub fn is_null(&self) -> bool {
+        self.ptr as usize == 0
+    }
+
+    pub fn check(&self) -> bool {
+        let vaddr = self.ptr as usize;
+        uaccess_ok(vaddr, 1) && (vaddr % align_of::<T>() == 0)
+    }
+
     pub fn as_ptr(&self) -> *const T {
         self.ptr
     }
@@ -103,6 +110,7 @@ impl<T, P: Policy> UserPtr<T, P> {
 
 impl<T, P: ReadPolicy> UserPtr<T, P> {
     pub fn read(&self) -> T {
+        assert!(self.check());
         let mut value = MaybeUninit::uninit();
         unsafe {
             copy_from_user(value.as_mut_ptr(), self.ptr, 1);
@@ -111,6 +119,7 @@ impl<T, P: ReadPolicy> UserPtr<T, P> {
     }
 
     pub fn read_array<const N: usize>(&self, max_len: usize) -> [T; N] {
+        assert!(self.check());
         let mut buf: [T; N] = unsafe { MaybeUninit::uninit().assume_init() };
         unsafe { copy_from_user(buf.as_mut_ptr(), self.ptr, max_len.min(N)) };
         buf
@@ -121,12 +130,14 @@ const C_STR_MAX_LEN: usize = 256;
 
 impl<P: ReadPolicy> UserPtr<u8, P> {
     pub fn read_str<const N: usize>(&self) -> ([u8; N], usize) {
+        assert!(self.check());
         let mut buf: [u8; N] = unsafe { MaybeUninit::uninit().assume_init() };
         let len = unsafe { copy_from_user_str(buf.as_mut_ptr(), self.ptr, N - 1) };
         (buf, len)
     }
 
     pub fn as_str(&self, len: usize) -> Result<&'static str, &'static str> {
+        assert!(self.check());
         core::str::from_utf8(self.as_slice(len)?).map_err(|_| "Invalid Utf8")
     }
 
@@ -139,10 +150,12 @@ impl<P: ReadPolicy> UserPtr<u8, P> {
 
 impl<T, P: WritePolicy> UserPtr<T, P> {
     pub fn write(&mut self, value: T) {
+        assert!(self.check());
         unsafe { copy_to_user(self.ptr, &value as *const T, 1) }
     }
 
     pub fn write_buf(&mut self, buf: &[T]) {
+        assert!(self.check());
         unsafe { copy_to_user(self.ptr, buf.as_ptr(), buf.len()) };
     }
 }

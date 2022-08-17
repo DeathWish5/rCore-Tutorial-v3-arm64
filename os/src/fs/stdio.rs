@@ -1,7 +1,7 @@
 //!Stdin & Stdout
 use super::File;
 use crate::arch::console_getchar;
-use crate::task::CurrentTask;
+use crate::task::{CurrentTask, SignalFlags};
 
 ///Standard input
 pub struct Stdin;
@@ -19,10 +19,20 @@ impl File for Stdin {
         assert_eq!(buf.len(), 1);
         // busy loop
         let ch = loop {
-            if let Some(c) = console_getchar() {
-                break c;
+            match console_getchar() {
+                None => {
+                    CurrentTask::get().yield_now();
+                }
+                // 3 is Crtl-C
+                Some(3) => {
+                    info!("Get Crtl C");
+                    CurrentTask::get().set_singal(SignalFlags::SIGINT);
+                    break 3;
+                }
+                Some(c) => {
+                    break c;
+                }
             }
-            CurrentTask::get().yield_now();
         };
         buf[0] = ch;
         1

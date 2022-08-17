@@ -18,6 +18,13 @@ static TESTS: &[&str] = &[
     "yield\0",
     "cat_filea\0",
     "huge_write\0",
+    "pipe_large_test\0",
+    "pipetest\0",
+    "run_pipe_test\0",
+    "sig_simple\0",
+    "sig_simple2\0",
+    "sig_tests\0",
+    // "cmdline_args\0",
 ];
 
 use user_lib::{exec, fork, waitpid};
