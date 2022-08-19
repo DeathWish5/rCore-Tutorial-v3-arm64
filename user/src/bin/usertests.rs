@@ -24,7 +24,7 @@ static TESTS: &[&str] = &[
     "sig_simple\0",
     "sig_simple2\0",
     "sig_tests\0",
-    // "cmdline_args\0",
+    "run_cmdline_args\0",
 ];
 
 use user_lib::{exec, fork, waitpid};
@@ -35,7 +35,7 @@ pub fn main() -> i32 {
         println!("Usertests: Running '{}':", test);
         let pid = fork();
         if pid == 0 {
-            if exec(*test) == -1 {
+            if exec(*test, &[core::ptr::null::<u8>()]) == -1 {
                 panic!("usertest '{}' not found!", test);
             } else {
                 panic!("unreachable!");

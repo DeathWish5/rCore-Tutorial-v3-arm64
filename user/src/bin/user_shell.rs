@@ -127,7 +127,7 @@ pub fn main() -> i32 {
                                 let input = &process_argument.input;
                                 let output = &process_argument.output;
                                 let args_copy = &process_argument.args_copy;
-                                let _args_addr = &process_argument.args_addr;
+                                let args_addr = &process_argument.args_addr;
                                 // redirect input
                                 if !input.is_empty() {
                                     let input_fd = open(input.as_str(), OpenFlags::RDONLY);
@@ -173,8 +173,7 @@ pub fn main() -> i32 {
                                     close(pipe_fd[1]);
                                 }
                                 // execute new application
-                                // TODO: add args support, args_addr.as_slice()
-                                if exec(args_copy[0].as_str()) == -1 {
+                                if exec(args_copy[0].as_str(), args_addr.as_slice()) == -1 {
                                     println!("Error when executing!");
                                     return -4;
                                 }

@@ -2,6 +2,7 @@
 #![allow(clippy::uninit_assumed_init)]
 
 use crate::config::USER_ASPACE_RANGE;
+use alloc::string::String;
 use core::marker::PhantomData;
 use core::mem::{align_of, size_of, MaybeUninit};
 use core::result::Result;
@@ -134,6 +135,10 @@ impl<P: ReadPolicy> UserPtr<u8, P> {
         let mut buf: [u8; N] = unsafe { MaybeUninit::uninit().assume_init() };
         let len = unsafe { copy_from_user_str(buf.as_mut_ptr(), self.ptr, N - 1) };
         (buf, len)
+    }
+
+    pub fn read_c_str(&self) -> Result<String, &'static str> {
+        self.as_c_str().map(|s| String::from(s))
     }
 
     pub fn as_str(&self, len: usize) -> Result<&'static str, &'static str> {
