@@ -21,7 +21,6 @@ mod process;
 
 use self::fs::*;
 use self::process::*;
-use crate::arch;
 use crate::trap::TrapFrame;
 
 pub fn syscall(syscall_id: usize, args: [usize; 3], tf: &mut TrapFrame) -> isize {
@@ -34,7 +33,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 3], tf: &mut TrapFrame) -> isize
         SYSCALL_GET_TIME => sys_get_time(),
         SYSCALL_GETPID => sys_getpid(),
         SYSCALL_FORK => sys_fork(tf),
-        SYSCALL_EXEC => sys_exec(args[0].into(), tf),
+        SYSCALL_EXEC => sys_exec(args[0].into(), args[1].into(), tf),
         SYSCALL_WAITPID => sys_waitpid(args[0] as isize, args[1].into()),
         SYSCALL_OPEN => sys_open(args[0].into(), args[1] as _),
         SYSCALL_CLOSE => sys_close(args[0]),

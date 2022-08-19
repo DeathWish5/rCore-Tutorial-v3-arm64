@@ -30,6 +30,13 @@ impl TrapFrame {
         }
     }
 
+    pub fn new_user_arg(entry: usize, ustack_top: usize, arg0: u64, arg1: u64) -> Self {
+        let mut tf = Self::new_user(entry, ustack_top);
+        tf.r[0] = arg0;
+        tf.r[1] = arg1;
+        tf
+    }
+
     pub fn new_fork(&self) -> Self {
         let mut tf = *self;
         tf.r[0] = 0; // for child process, fork returns 0

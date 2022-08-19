@@ -1,3 +1,4 @@
+use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicI32, AtomicU8, AtomicUsize, Ordering};
@@ -335,6 +336,22 @@ fn task_entry() -> ! {
     }
 }
 
+fn push_stack<T>(stack: usize, val: T) -> usize {
+    let stack = unsafe { (stack as *mut T).sub(1) };
+    unsafe { *stack = val };
+    stack as usize
+}
+
+fn push_c_str(stack: usize, val: &String) -> usize {
+    let len = val.len() + 1;
+    let stack = unsafe { core::slice::from_raw_parts_mut((stack - len) as *mut u8, len) };
+    for (idx, c) in val.as_bytes().iter().enumerate() {
+        stack[idx] = *c;
+    }
+    stack[len - 1] = 0;
+    stack.as_ptr() as usize
+}
+
 pub struct CurrentTask<'a>(pub &'a Arc<Task>);
 
 impl<'a> CurrentTask<'a> {
@@ -347,21 +364,31 @@ impl<'a> CurrentTask<'a> {
     }
 
     pub fn exit(&self, exit_code: i32) -> ! {
-        info!("Task {} exit with {}", self.id.as_usize(), exit_code);
         *self.vm.lock() = None; // drop memory set before lock
         TASK_MANAGER.lock().exit_current(self, exit_code)
     }
 
-    pub fn exec(&self, path: &str, tf: &mut TrapFrame) -> isize {
+    pub fn exec(&self, path: &str, args: Vec<String>, tf: &mut TrapFrame) -> isize {
         assert!(!self.is_kernel_task());
         if let Some(elf_data) = open_file(path, OpenFlags::RDONLY) {
             let mut vm = self.vm.lock();
             let vm = vm.get_or_insert(MemorySet::new());
             vm.clear();
-            let (entry, ustack_top) = vm.load_user(elf_data.read_all().as_slice());
-            *tf = TrapFrame::new_user(entry, ustack_top);
             crate::arch::flush_tlb_all();
-            0
+            let (entry, mut ustack_top) = vm.load_user(elf_data.read_all().as_slice());
+            let argc = args.len();
+            let mut argv_vec = Vec::<usize>::new();
+            for arg in args.iter().rev() {
+                ustack_top = push_c_str(ustack_top, arg);
+                argv_vec.push(ustack_top);
+            }
+            ustack_top = ustack_top & !0xF; // 16 bytes aligned
+            for arg in argv_vec {
+                ustack_top = push_stack(ustack_top, arg);
+            }
+            let argv_base = ustack_top;
+            *tf = TrapFrame::new_user_arg(entry, ustack_top, argc as _, argv_base as _);
+            argc as isize
         } else {
             -1
         }

@@ -2,6 +2,7 @@ use crate::mm::{UserInOutPtr, UserInPtr, UserOutPtr};
 use crate::task::{pid2task, spawn_task, CurrentTask, SignalAction, SignalFlags, MAX_SIG};
 use crate::timer::get_time_ms;
 use crate::trap::TrapFrame;
+use alloc::{string::String, vec::Vec};
 
 const MAX_STR_LEN: usize = 256;
 
@@ -29,10 +30,26 @@ pub fn sys_fork(tf: &TrapFrame) -> isize {
     pid
 }
 
-pub fn sys_exec(path: UserInPtr<u8>, tf: &mut TrapFrame) -> isize {
+fn read_argvs(args: UserInPtr<*const u8>) -> Vec<String> {
+    let mut args_vec = Vec::<String>::new();
+    let mut argc = 0;
+    loop {
+        let arg = unsafe { args.add(argc).read() } as usize;
+        if arg as usize == 0 {
+            break;
+        }
+        let arg: UserInPtr<u8> = UserInPtr::from(arg);
+        let s = arg.read_c_str().expect("Invalid args");
+        args_vec.push(s);
+        argc += 1;
+    }
+    args_vec
+}
+
+pub fn sys_exec(path: UserInPtr<u8>, args: UserInPtr<*const u8>, tf: &mut TrapFrame) -> isize {
     let (path_buf, len) = path.read_str::<MAX_STR_LEN>();
     let path = core::str::from_utf8(&path_buf[..len]).unwrap();
-    CurrentTask::get().exec(path, tf)
+    CurrentTask::get().exec(path, read_argvs(args), tf)
 }
 
 /// If there is no child process has the same pid as the given, return -1.
