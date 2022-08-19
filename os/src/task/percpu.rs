@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
 
-use super::structs::Task;
+use super::structs::{Process, Task};
 use crate::config::MAX_CPUS;
 use crate::sync::LazyInit;
 
@@ -11,18 +11,19 @@ static CPUS: [LazyInit<PerCpu>; MAX_CPUS] = [LazyInit::new(); MAX_CPUS];
 pub struct PerCpu {
     _id: usize,
     current_task: UnsafeCell<Arc<Task>>,
-    idle_task: Arc<Task>,
+    idle_proc: Arc<Process>,
 }
 
 unsafe impl Sync for PerCpu {}
 
 impl PerCpu {
     fn new(id: usize) -> Self {
-        let idle_task = Task::new_idle();
+        let idle_proc = Process::new_idle();
+        let idle_task = idle_proc.task();
         Self {
             _id: id,
-            current_task: UnsafeCell::new(idle_task.clone()),
-            idle_task,
+            current_task: UnsafeCell::new(idle_task),
+            idle_proc,
         }
     }
 
@@ -30,8 +31,12 @@ impl PerCpu {
         unsafe { &*(crate::arch::thread_pointer() as *const Self) }
     }
 
-    pub fn idle_task<'a>() -> &'a Arc<Task> {
-        &Self::current().idle_task
+    pub fn idle_proc<'a>() -> &'a Arc<Process> {
+        &Self::current().idle_proc
+    }
+
+    pub fn idle_task() -> Arc<Task> {
+        Self::idle_proc().first_task().unwrap()
     }
 
     pub fn current_task<'a>(&self) -> &'a Arc<Task> {

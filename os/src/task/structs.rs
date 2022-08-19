@@ -1,9 +1,9 @@
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
-use alloc::{boxed::Box, vec::Vec};
-use core::sync::atomic::{AtomicI32, AtomicU8, AtomicUsize, Ordering};
+use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering};
 
-use super::manager::{TaskLockedCell, TASK_MANAGER, TASK_MAP};
+use super::manager::{TaskLockedCell, PROC_MAP, TASK_MANAGER};
 use super::percpu::PerCpu;
 use super::signal::{SignalActions, SignalFlags, MAX_SIG};
 use super::switch::TaskContext;
@@ -14,12 +14,15 @@ use crate::mm::{MemorySet, PhysAddr};
 use crate::sync::{LazyInit, Mutex};
 use crate::trap::TrapFrame;
 
-pub static ROOT_TASK: LazyInit<Arc<Task>> = LazyInit::new();
+pub static ROOT_PROC: LazyInit<Arc<Process>> = LazyInit::new();
 
 enum EntryState {
     Kernel { pc: usize, arg: usize },
     User(Box<TrapFrame>),
 }
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct ProcId(usize);
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct TaskId(usize);
@@ -33,18 +36,28 @@ pub enum TaskState {
 }
 
 pub struct Task {
-    id: TaskId,
+    tid: TaskId,
     is_kernel: bool,
+    process: Weak<Process>,
     state: AtomicU8,
     entry: EntryState,
     exit_code: AtomicI32,
-
     kstack: Stack<KERNEL_STACK_SIZE>,
     ctx: TaskLockedCell<TaskContext>,
+}
 
+pub struct Process {
+    id: ProcId,
+    is_kernel: bool,
+    is_zombie: AtomicBool,
+    exit_code: AtomicI32,
     vm: Mutex<Option<MemorySet>>,
-    pub parent: Mutex<Weak<Task>>,
-    pub children: Mutex<Vec<Arc<Task>>>,
+
+    pub tasks: Mutex<BTreeMap<usize, Arc<Task>>>,
+    tid_allocator: IdAllocator,
+
+    pub parent: Mutex<Weak<Process>>,
+    pub children: Mutex<Vec<Arc<Process>>>,
     pub fd_table: Mutex<Vec<Option<Arc<dyn File + Send + Sync>>>>,
     pub signal: Mutex<SignalInner>,
 }
@@ -64,12 +77,34 @@ pub struct SignalInner {
     pub trapframe_backup: Option<TrapFrame>,
 }
 
-impl TaskId {
+struct IdAllocator {
+    id: AtomicUsize,
+}
+
+impl IdAllocator {
+    pub const fn zero() -> Self {
+        Self {
+            id: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn new(n: usize) -> Self {
+        Self {
+            id: AtomicUsize::new(n),
+        }
+    }
+
+    pub fn alloc(&self) -> usize {
+        self.id.fetch_add(1, Ordering::AcqRel)
+    }
+}
+
+impl ProcId {
     const IDLE_TASK_ID: Self = Self(0);
 
     fn alloc() -> Self {
-        static NEXT_PID: AtomicUsize = AtomicUsize::new(1);
-        Self(NEXT_PID.fetch_add(1, Ordering::AcqRel))
+        static PID_ALLOCATOR: IdAllocator = IdAllocator::zero();
+        Self(PID_ALLOCATOR.alloc())
     }
 
     pub const fn as_usize(&self) -> usize {
@@ -77,9 +112,21 @@ impl TaskId {
     }
 }
 
-impl From<usize> for TaskId {
+impl TaskId {
+    pub const fn as_usize(&self) -> usize {
+        self.0
+    }
+}
+
+impl From<usize> for ProcId {
     fn from(pid: usize) -> Self {
         Self(pid)
+    }
+}
+
+impl From<usize> for TaskId {
+    fn from(tid: usize) -> Self {
+        Self(tid)
     }
 }
 
@@ -94,19 +141,16 @@ impl From<u8> for TaskState {
     }
 }
 
-impl Task {
-    fn new_common(id: TaskId, is_kernel: bool) -> Self {
+impl Process {
+    fn new_common(id: ProcId, is_kernel: bool) -> Self {
         Self {
             id,
+            is_zombie: AtomicBool::from(false),
             is_kernel,
-            state: AtomicU8::new(TaskState::Ready as u8),
-            entry: EntryState::Kernel { pc: 0, arg: 0 },
             exit_code: AtomicI32::new(0),
-
-            kstack: Stack::default(),
-            ctx: TaskLockedCell::new(TaskContext::default()),
-
             vm: Mutex::new(None),
+            tasks: Mutex::new(BTreeMap::new()),
+            tid_allocator: IdAllocator::zero(),
             parent: Mutex::new(Weak::default()),
             children: Mutex::new(Vec::new()),
             fd_table: Mutex::new(alloc::vec![
@@ -130,59 +174,58 @@ impl Task {
         }
     }
 
-    pub fn add_child(self: &Arc<Self>, child: &Arc<Task>) {
-        *child.parent.lock() = Arc::downgrade(self);
-        self.children.lock().push(child.clone());
-    }
-
     pub fn new_idle() -> Arc<Self> {
-        let t = Self::new_common(TaskId::IDLE_TASK_ID, true);
-        t.set_state(TaskState::Running);
-        Arc::new(t)
+        let t = Arc::new(Self::new_common(ProcId::IDLE_TASK_ID, true));
+        let task = Task::new_common(t.alloc_tid(), true, &t);
+        task.set_state(TaskState::Running);
+        t.add_task(Arc::new(task));
+        t
     }
 
     pub fn new_kernel(entry: fn(usize) -> usize, arg: usize) -> Arc<Self> {
-        let mut t = Self::new_common(TaskId::alloc(), true);
-        t.entry = EntryState::Kernel {
-            pc: entry as usize,
-            arg,
-        };
-        t.ctx
-            .get_mut()
-            .init(task_entry as _, t.kstack.top(), PhysAddr::new(0));
+        let t = Arc::new(Self::new_common(ProcId::alloc(), true));
+        let task = Task::new_kernel(t.alloc_tid(), &t, entry, arg);
+        t.add_task(task);
 
-        let t = Arc::new(t);
         if !t.is_root() {
-            ROOT_TASK.add_child(&t);
+            ROOT_PROC.add_child(&t);
         }
         t
     }
 
     pub fn new_user(path: &str) -> Arc<Self> {
+        let t = Arc::new(Self::new_common(ProcId::alloc(), false));
+
         let elf_data = open_file(path, OpenFlags::RDONLY).expect("No such user program");
         let mut vm = MemorySet::new();
         let (entry, ustack_top) = vm.load_user(elf_data.read_all().as_slice());
 
-        let mut t = Self::new_common(TaskId::alloc(), false);
-        t.entry = EntryState::User(Box::new(TrapFrame::new_user(entry, ustack_top)));
-        t.ctx
-            .get_mut()
-            .init(task_entry as _, t.kstack.top(), vm.page_table_root());
-        *t.vm.lock() = Some(vm);
+        let mut task = Task::new_common(t.alloc_tid(), false, &t);
 
-        let t = Arc::new(t);
-        ROOT_TASK.add_child(&t);
+        task.entry = EntryState::User(Box::new(TrapFrame::new_user(entry, ustack_top)));
+        task.ctx
+            .get_mut()
+            .init(task_entry as _, task.kstack.top(), vm.page_table_root());
+
+        *t.vm.lock() = Some(vm);
+        t.add_task(Arc::new(task));
+
+        ROOT_PROC.add_child(&t);
         t
     }
 
     pub fn new_fork(self: &Arc<Self>, tf: &TrapFrame) -> Arc<Self> {
-        assert!(!self.is_kernel_task());
-        let mut t = Self::new_common(TaskId::alloc(), false);
+        assert!(!self.is_kernel());
+        let t = Arc::new(Self::new_common(ProcId::alloc(), false));
         let vm = self.vm.lock().clone().unwrap();
-        t.entry = EntryState::User(Box::new(tf.new_fork()));
-        t.ctx
+
+        let mut task = Task::new_common(t.alloc_tid(), false, &t);
+
+        task.entry = EntryState::User(Box::new(tf.new_fork()));
+        task.ctx
             .get_mut()
-            .init(task_entry as _, t.kstack.top(), vm.page_table_root());
+            .init(task_entry as _, task.kstack.top(), vm.page_table_root());
+
         *t.vm.lock() = Some(vm);
         // copy fd table
         let mut new_fd_table: Vec<Option<Arc<dyn File + Send + Sync>>> = Vec::new();
@@ -194,12 +237,11 @@ impl Task {
             }
         }
         *t.fd_table.lock() = new_fd_table;
-        let t = Arc::new(t);
         self.add_child(&t);
         t
     }
 
-    pub fn alloc_fd(self: &Arc<Self>, file: Option<Arc<dyn File + Send + Sync>>) -> usize {
+    pub fn alloc_fd(&self, file: Option<Arc<dyn File + Send + Sync>>) -> usize {
         let mut fd_table = self.fd_table.lock();
         let fd = if let Some(fd) = (0..fd_table.len()).find(|fd| fd_table[*fd].is_none()) {
             fd
@@ -213,12 +255,12 @@ impl Task {
         fd
     }
 
-    pub fn set_singal(self: &Arc<Self>, signal: SignalFlags) {
+    pub fn set_singal(&self, signal: SignalFlags) {
         let mut inner = self.signal.lock();
         inner.signals |= signal;
     }
 
-    pub fn singal_metadata(self: &Arc<Self>) -> (SignalFlags, Option<SignalFlags>) {
+    pub fn singal_metadata(&self) -> (SignalFlags, Option<SignalFlags>) {
         let inner = self.signal.lock();
         let masked_signal = inner.signals & inner.signal_mask;
         if let Some(sig) = inner.handling_sig {
@@ -229,7 +271,7 @@ impl Task {
         }
     }
 
-    fn kernel_signal_handler(self: &Arc<Self>, signal: SignalFlags) {
+    fn kernel_signal_handler(&self, signal: SignalFlags) {
         let mut inner = self.signal.lock();
         match signal {
             SignalFlags::SIGSTOP => {
@@ -252,7 +294,7 @@ impl Task {
         }
     }
 
-    fn user_signal_handler(self: &Arc<Self>, sig: usize, tf: &mut TrapFrame) {
+    fn user_signal_handler(&self, sig: usize, tf: &mut TrapFrame) {
         let mut inner = self.signal.lock();
         let handler = inner.signal_actions.table[sig].handler;
         if handler != 0 {
@@ -275,8 +317,35 @@ impl Task {
         }
     }
 
-    pub fn is_kernel_task(&self) -> bool {
-        self.is_kernel
+    pub fn alloc_tid(&self) -> TaskId {
+        self.tid_allocator.alloc().into()
+    }
+
+    pub fn add_task(self: &Arc<Self>, task: Arc<Task>) {
+        assert!(Arc::ptr_eq(self, &task.process.upgrade().unwrap()));
+        let mut tasks = self.tasks.lock();
+        assert!(tasks.insert(task.tid().as_usize(), task).is_none());
+    }
+
+    pub fn add_child(self: &Arc<Self>, child: &Arc<Process>) {
+        *child.parent.lock() = Arc::downgrade(self);
+        self.children.lock().push(child.clone());
+    }
+
+    pub fn task_count(&self) -> usize {
+        self.tasks.lock().len()
+    }
+
+    pub fn task(&self) -> Arc<Task> {
+        assert!(self.task_count() == 1);
+        self.tasks.lock().get(&0).unwrap().clone()
+    }
+
+    pub fn first_task(&self) -> Option<Arc<Task>> {
+        self.tasks
+            .lock()
+            .first_key_value()
+            .map(|(_, value)| value.clone())
     }
 
     pub const fn is_root(&self) -> bool {
@@ -287,8 +356,82 @@ impl Task {
         self.id.as_usize() == 0
     }
 
-    pub fn pid(&self) -> TaskId {
+    pub fn is_zombie(&self) -> bool {
+        self.is_zombie.load(Ordering::SeqCst)
+    }
+
+    pub fn pid(&self) -> ProcId {
         self.id
+    }
+
+    pub fn is_kernel(&self) -> bool {
+        self.is_kernel
+    }
+
+    pub fn exit_code(&self) -> i32 {
+        self.exit_code.load(Ordering::SeqCst)
+    }
+
+    pub fn set_exit_code(&self, exit_code: i32) {
+        self.exit_code.store(exit_code, Ordering::SeqCst)
+    }
+
+    #[allow(unused)]
+    pub fn traverse(self: &Arc<Self>, func: &impl Fn(&Arc<Process>)) {
+        func(self);
+        for c in self.children.lock().iter() {
+            c.traverse(func);
+        }
+    }
+}
+
+impl Task {
+    fn new_common(tid: TaskId, is_kernel: bool, proc: &Arc<Process>) -> Self {
+        Self {
+            tid,
+            is_kernel,
+            process: Arc::downgrade(proc),
+
+            state: AtomicU8::new(TaskState::Ready as u8),
+            entry: EntryState::Kernel { pc: 0, arg: 0 },
+            exit_code: AtomicI32::new(0),
+
+            kstack: Stack::default(),
+            ctx: TaskLockedCell::new(TaskContext::default()),
+        }
+    }
+
+    pub fn new_kernel(
+        tid: TaskId,
+        proc: &Arc<Process>,
+        entry: fn(usize) -> usize,
+        arg: usize,
+    ) -> Arc<Self> {
+        let mut t = Self::new_common(tid, true, proc);
+        t.entry = EntryState::Kernel {
+            pc: entry as usize,
+            arg,
+        };
+        t.ctx
+            .get_mut()
+            .init(task_entry as _, t.kstack.top(), PhysAddr::new(0));
+        Arc::new(t)
+    }
+
+    pub fn proc(&self) -> Arc<Process> {
+        self.process.upgrade().unwrap()
+    }
+
+    pub fn is_root(&self) -> bool {
+        self.proc().is_root() && self.tid.as_usize() == 0
+    }
+
+    pub fn is_idle(&self) -> bool {
+        self.proc().is_idle() && self.tid.as_usize() == 0
+    }
+
+    pub fn is_kernel(&self) -> bool {
+        self.is_kernel
     }
 
     pub fn state(&self) -> TaskState {
@@ -311,11 +454,8 @@ impl Task {
         &self.ctx
     }
 
-    pub fn traverse(self: &Arc<Self>, func: &impl Fn(&Arc<Task>)) {
-        func(self);
-        for c in self.children.lock().iter() {
-            c.traverse(func);
-        }
+    pub fn tid(&self) -> TaskId {
+        self.tid
     }
 }
 
@@ -352,24 +492,38 @@ fn push_c_str(stack: usize, val: &String) -> usize {
     stack.as_ptr() as usize
 }
 
-pub struct CurrentTask<'a>(pub &'a Arc<Task>);
+impl Process {
+    pub fn exit(&self, exit_code: i32) {
+        assert!(!self.is_idle());
+        assert!(!self.is_root());
 
-impl<'a> CurrentTask<'a> {
-    pub fn get() -> Self {
-        Self(PerCpu::current().current_task())
+        // Make all child tasks as the children of the root task
+        let mut children = self.children.lock();
+        for c in children.iter() {
+            ROOT_PROC.add_child(c);
+        }
+        children.clear();
+
+        // drop memory set
+        *self.vm.lock() = None;
+
+        self.is_zombie.store(true, Ordering::SeqCst);
+        self.set_exit_code(exit_code);
     }
 
-    pub fn yield_now(&self) {
-        TASK_MANAGER.lock().yield_current(self)
-    }
-
-    pub fn exit(&self, exit_code: i32) -> ! {
-        *self.vm.lock() = None; // drop memory set before lock
-        TASK_MANAGER.lock().exit_current(self, exit_code)
+    pub fn task_exit(&self, tid: TaskId, exit_code: i32) {
+        let mut tasks = self.tasks.lock();
+        if let Some(_task) = tasks.remove(&tid.as_usize()) {
+            // print some message ?
+        }
+        if tasks.is_empty() {
+            self.exit(exit_code);
+        }
     }
 
     pub fn exec(&self, path: &str, args: Vec<String>, tf: &mut TrapFrame) -> isize {
-        assert!(!self.is_kernel_task());
+        assert!(!self.is_kernel());
+        assert!(self.task_count() == 1);
         if let Some(elf_data) = open_file(path, OpenFlags::RDONLY) {
             let mut vm = self.vm.lock();
             let vm = vm.get_or_insert(MemorySet::new());
@@ -400,9 +554,9 @@ impl<'a> CurrentTask<'a> {
         for (idx, t) in children.iter().enumerate() {
             if pid == -1 || t.pid().as_usize() == pid as usize {
                 found_pid = true;
-                if t.state() == TaskState::Zombie {
+                if t.is_zombie() {
                     let child = children.remove(idx);
-                    TASK_MAP.lock().remove(&child.pid().as_usize());
+                    PROC_MAP.lock().remove(&child.pid().as_usize());
                     assert_eq!(Arc::strong_count(&child), 1);
                     *exit_code = child.exit_code();
                     return child.pid().as_usize() as isize;
@@ -435,11 +589,29 @@ impl<'a> CurrentTask<'a> {
         }
         None
     }
+}
+
+pub struct CurrentTask<'a>(pub &'a Arc<Task>);
+
+impl<'a> CurrentTask<'a> {
+    pub fn get() -> Self {
+        Self(PerCpu::current().current_task())
+    }
+
+    pub fn yield_now(&self) {
+        TASK_MANAGER.lock().yield_current(self)
+    }
+
+    pub fn exit(&self, exit_code: i32) -> ! {
+        self.proc().task_exit(self.tid().into(), exit_code);
+        TASK_MANAGER.lock().exit_current(self, exit_code)
+    }
 
     pub fn handle_signals(&self, tf: &mut TrapFrame) -> Option<(i32, &'static str)> {
         loop {
-            self.check_pending_signals(tf);
-            let inner = self.signal.lock();
+            let proc = self.proc();
+            proc.check_pending_signals(tf);
+            let inner = proc.signal.lock();
             let frozen_flag = inner.frozen;
             let killed_flag = inner.killed;
             drop(inner);
@@ -448,7 +620,7 @@ impl<'a> CurrentTask<'a> {
             }
             self.yield_now();
         }
-        self.signal.lock().signals.check_error()
+        self.proc().signal.lock().signals.check_error()
     }
 }
 

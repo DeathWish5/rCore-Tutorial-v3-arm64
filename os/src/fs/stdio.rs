@@ -26,7 +26,7 @@ impl File for Stdin {
                 // 3 is Crtl-C
                 Some(3) => {
                     info!("Get Crtl C");
-                    CurrentTask::get().set_singal(SignalFlags::SIGINT);
+                    CurrentTask::get().proc().set_singal(SignalFlags::SIGINT);
                     break 3;
                 }
                 Some(c) => {

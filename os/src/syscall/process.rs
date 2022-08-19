@@ -1,5 +1,7 @@
 use crate::mm::{UserInOutPtr, UserInPtr, UserOutPtr};
-use crate::task::{pid2task, spawn_task, CurrentTask, SignalAction, SignalFlags, MAX_SIG};
+use crate::task::{
+    pid2proc, spawn_proc, spawn_task, CurrentTask, SignalAction, SignalFlags, MAX_SIG,
+};
 use crate::timer::get_time_ms;
 use crate::trap::TrapFrame;
 use alloc::{string::String, vec::Vec};
@@ -20,13 +22,14 @@ pub fn sys_get_time() -> isize {
 }
 
 pub fn sys_getpid() -> isize {
-    CurrentTask::get().pid().as_usize() as isize
+    CurrentTask::get().proc().pid().as_usize() as isize
 }
 
 pub fn sys_fork(tf: &TrapFrame) -> isize {
-    let new_task = CurrentTask::get().new_fork(tf);
-    let pid = new_task.pid().as_usize() as isize;
-    spawn_task(new_task);
+    let new_proc = CurrentTask::get().proc().new_fork(tf);
+    let pid = new_proc.pid().as_usize() as isize;
+    spawn_proc(new_proc.clone());
+    spawn_task(new_proc.task());
     pid
 }
 
@@ -49,23 +52,23 @@ fn read_argvs(args: UserInPtr<*const u8>) -> Vec<String> {
 pub fn sys_exec(path: UserInPtr<u8>, args: UserInPtr<*const u8>, tf: &mut TrapFrame) -> isize {
     let (path_buf, len) = path.read_str::<MAX_STR_LEN>();
     let path = core::str::from_utf8(&path_buf[..len]).unwrap();
-    CurrentTask::get().exec(path, read_argvs(args), tf)
+    CurrentTask::get().proc().exec(path, read_argvs(args), tf)
 }
 
 /// If there is no child process has the same pid as the given, return -1.
 /// Else if there is a child process but it is still running, return -2.
 pub fn sys_waitpid(pid: isize, mut exit_code_ptr: UserOutPtr<i32>) -> isize {
     let mut exit_code = 0;
-    let ret = CurrentTask::get().waitpid(pid, &mut exit_code);
+    let ret = CurrentTask::get().proc().waitpid(pid, &mut exit_code);
     exit_code_ptr.write(exit_code);
     ret
 }
 
 pub fn sys_kill(pid: usize, signum: i32) -> isize {
-    if let Some(task) = pid2task(pid) {
+    if let Some(proc) = pid2proc(pid) {
         if let Some(flag) = SignalFlags::from_bits(1 << signum) {
             // insert the signal if legal
-            let mut inner = task.signal.lock();
+            let mut inner = proc.signal.lock();
             if inner.signals.contains(flag) {
                 return -1;
             }
@@ -80,8 +83,8 @@ pub fn sys_kill(pid: usize, signum: i32) -> isize {
 }
 
 pub fn sys_sigprocmask(mask: u32) -> isize {
-    let task = CurrentTask::get();
-    let mut inner = task.signal.lock();
+    let proc = CurrentTask::get().proc();
+    let mut inner = proc.signal.lock();
     let old_mask = inner.signal_mask;
     if let Some(flag) = SignalFlags::from_bits(mask) {
         inner.signal_mask = flag;
@@ -92,8 +95,8 @@ pub fn sys_sigprocmask(mask: u32) -> isize {
 }
 
 pub fn sys_sigretrun(tf: &mut TrapFrame) -> isize {
-    let task = CurrentTask::get();
-    let mut inner = task.signal.lock();
+    let proc = CurrentTask::get().proc();
+    let mut inner = proc.signal.lock();
     if let Some(backup) = inner.trapframe_backup.take() {
         inner.handling_sig = None;
         inner.signal_mask = inner.mask_backup.take().unwrap();
@@ -119,8 +122,8 @@ pub fn sys_sigaction(
         {
             return -1;
         }
-        let task = CurrentTask::get();
-        let mut inner = task.signal.lock();
+        let proc = CurrentTask::get().proc();
+        let mut inner = proc.signal.lock();
         let old_kernel_action = inner.signal_actions.table[signum as usize];
         if old_kernel_action.mask != SignalFlags::TRAP_QUIT {
             old_action.write(old_kernel_action);

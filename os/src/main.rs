@@ -5,6 +5,7 @@
 #![feature(alloc_error_handler)]
 #![feature(naked_functions)]
 #![feature(const_maybe_uninit_zeroed)]
+#![feature(map_first_last)]
 
 extern crate alloc;
 

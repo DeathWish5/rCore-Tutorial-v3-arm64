@@ -4,7 +4,7 @@ use core::cell::UnsafeCell;
 
 use super::percpu::PerCpu;
 use super::schedule::{Scheduler, SimpleScheduler};
-use super::structs::{CurrentTask, Task, TaskState, ROOT_TASK};
+use super::structs::{CurrentTask, Process, Task, TaskState, ROOT_PROC};
 use crate::sync::{LazyInit, SpinNoIrqLock};
 
 pub struct TaskManager<S: Scheduler> {
@@ -58,21 +58,10 @@ impl<S: Scheduler> TaskManager<S> {
     }
 
     pub fn exit_current(&mut self, curr_task: &CurrentTask, exit_code: i32) -> ! {
-        assert!(!curr_task.is_idle());
-        assert!(!curr_task.is_root());
         assert!(curr_task.state() == TaskState::Running);
 
         curr_task.set_state(TaskState::Zombie);
         curr_task.set_exit_code(exit_code);
-
-        // Make all child tasks as the children of the root task
-        {
-            let mut children = curr_task.children.lock();
-            for c in children.iter() {
-                ROOT_TASK.add_child(c);
-            }
-            children.clear();
-        }
 
         self.resched(curr_task);
         unreachable!("task exited!");
@@ -80,31 +69,32 @@ impl<S: Scheduler> TaskManager<S> {
 
     #[allow(unused)]
     pub fn dump_all_tasks(&self) {
-        if ROOT_TASK.children.lock().len() == 0 {
+        if ROOT_PROC.children.lock().len() == 0 {
             return;
         }
         println!(
             "{:>4} {:>4} {:>6} {:>4}  STATE",
             "PID", "PPID", "#CHILD", "#REF",
         );
-        ROOT_TASK.traverse(&|t: &Arc<Task>| {
-            let pid = t.pid().as_usize();
-            let ref_count = Arc::strong_count(t);
-            let children_count = t.children.lock().len();
-            let state = t.state();
-            if let Some(p) = t.parent.lock().upgrade() {
-                let ppid = p.pid().as_usize();
-                println!(
-                    "{:>4} {:>4} {:>6} {:>4}  {:?}",
-                    pid, ppid, children_count, ref_count, state
-                );
-            } else {
-                println!(
-                    "{:>4} {:>4} {:>6} {:>4}  {:?}",
-                    pid, '-', children_count, ref_count, state
-                );
-            }
-        });
+        // TODO:
+        // ROOT_PROC.traverse(&|t: &Arc<Process>| {
+        //     let pid = t.pid().as_usize();
+        //     let ref_count = Arc::strong_count(t);
+        //     let children_count = t.children.lock().len();
+        //     let state = t.state();
+        //     if let Some(p) = t.parent.lock().upgrade() {
+        //         let ppid = p.pid().as_usize();
+        //         println!(
+        //             "{:>4} {:>4} {:>6} {:>4}  {:?}",
+        //             pid, ppid, children_count, ref_count, state
+        //         );
+        //     } else {
+        //         println!(
+        //             "{:>4} {:>4} {:>6} {:>4}  {:?}",
+        //             pid, '-', children_count, ref_count, state
+        //         );
+        //     }
+        // });
     }
 }
 
@@ -133,16 +123,17 @@ impl<T> TaskLockedCell<T> {
     }
 }
 
-pub fn pid2task(id: usize) -> Option<Arc<Task>> {
-    TASK_MAP.lock().get(&id).map(|t| t.clone())
+pub fn pid2proc(id: usize) -> Option<Arc<Process>> {
+    PROC_MAP.lock().get(&id).map(|t| t.clone())
 }
 
 pub(super) static TASK_MANAGER: LazyInit<SpinNoIrqLock<TaskManager<SimpleScheduler>>> =
     LazyInit::new();
 
-pub(super) static TASK_MAP: LazyInit<SpinNoIrqLock<BTreeMap<usize, Arc<Task>>>> = LazyInit::new();
+pub(super) static PROC_MAP: LazyInit<SpinNoIrqLock<BTreeMap<usize, Arc<Process>>>> =
+    LazyInit::new();
 
 pub(super) fn init() {
     TASK_MANAGER.init_by(SpinNoIrqLock::new(TaskManager::new(SimpleScheduler::new())));
-    TASK_MAP.init_by(SpinNoIrqLock::new(BTreeMap::new()));
+    PROC_MAP.init_by(SpinNoIrqLock::new(BTreeMap::new()));
 }
