@@ -2,7 +2,7 @@ use crate::config::{USER_STACK_SIZE, USER_STACK_TOP};
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU8, AtomicUsize, Ordering};
 
 use super::manager::{TaskLockedCell, PROC_MAP, TASK_MANAGER};
 use super::percpu::PerCpu;
@@ -12,7 +12,7 @@ use crate::config::KERNEL_STACK_SIZE;
 use crate::fs::{open_file, OpenFlags};
 use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{MapArea, MemFlags, MemorySet, PhysAddr, VirtAddr, PAGE_SIZE};
-use crate::sync::{LazyInit, Mutex};
+use crate::sync::{Condvar, LazyInit, Mutex, Semaphore, UserMutex};
 use crate::trap::TrapFrame;
 
 pub static ROOT_PROC: LazyInit<Arc<Process>> = LazyInit::new();
@@ -34,6 +34,7 @@ pub enum TaskState {
     Ready = 1,
     Running = 2,
     Zombie = 3,
+    Blocking = 4,
 }
 
 #[repr(u8)]
@@ -46,7 +47,7 @@ pub enum ProcState {
 
 pub struct Task {
     tid: TaskId,
-    is_kernel: bool,
+    _is_kernel: bool,
     process: Weak<Process>,
     state: AtomicU8,
     entry: EntryState,
@@ -70,6 +71,9 @@ pub struct Process {
     pub children: Mutex<Vec<Arc<Process>>>,
     pub fd_table: Mutex<Vec<Option<Arc<dyn File + Send + Sync>>>>,
     pub signal_actions: Mutex<SignalActions>,
+    pub mutex_list: Mutex<Vec<Option<Arc<dyn UserMutex>>>>,
+    pub semaphore_list: Mutex<Vec<Option<Arc<Semaphore>>>>,
+    pub condvar_list: Mutex<Vec<Option<Arc<Condvar>>>>,
 }
 
 pub struct SignalInner {
@@ -144,6 +148,7 @@ impl From<u8> for TaskState {
             1 => Self::Ready,
             2 => Self::Running,
             3 => Self::Zombie,
+            4 => Self::Blocking,
             _ => panic!("invalid task state: {}", state),
         }
     }
@@ -181,6 +186,9 @@ impl Process {
                 Some(Arc::new(Stdout)),
             ]),
             signal_actions: Mutex::new(SignalActions::default()),
+            mutex_list: Mutex::new(Vec::new()),
+            semaphore_list: Mutex::new(Vec::new()),
+            condvar_list: Mutex::new(Vec::new()),
         }
     }
 
@@ -240,11 +248,6 @@ impl Process {
             USER_STACK_SIZE,
             MemFlags::READ | MemFlags::WRITE | MemFlags::USER,
         ));
-        info!(
-            "{:x} = {:x?}",
-            entry,
-            vm.as_ref().unwrap().pt().query(VirtAddr::new(entry))
-        );
         drop(vm);
         let task = Task::new_user(tid.into(), self, entry, ustack_top, arg);
         self.tasks.lock().insert(tid, task.clone());
@@ -381,7 +384,7 @@ impl Task {
     fn new_common(tid: TaskId, is_kernel: bool, proc: &Arc<Process>) -> Self {
         Self {
             tid,
-            is_kernel,
+            _is_kernel: is_kernel,
             process: Arc::downgrade(proc),
 
             state: AtomicU8::new(TaskState::Ready as u8),
@@ -432,8 +435,7 @@ impl Task {
         t.entry = EntryState::User(Box::new(TrapFrame::new_user_arg(
             entry, ustack_top, arg as _, 0,
         )));
-        let token = t
-            .ctx
+        t.ctx
             .get_mut()
             .init(task_entry as _, t.kstack.top(), proc.page_table_root());
         Arc::new(t)
@@ -480,6 +482,12 @@ impl Task {
         }
     }
 
+    pub fn resume(self: &Arc<Self>) {
+        assert!(self.state() == TaskState::Blocking);
+        self.set_state(TaskState::Ready);
+        TASK_MANAGER.lock().spawn(self.clone());
+    }
+
     fn user_signal_handler(&self, sig: usize, tf: &mut TrapFrame) {
         let action = self.proc().signal_actions.lock().table[sig];
         let mut inner = self.signal.lock();
@@ -516,8 +524,8 @@ impl Task {
         self.proc().is_idle() && self.tid.as_usize() == 0
     }
 
-    pub fn is_kernel(&self) -> bool {
-        self.is_kernel
+    pub fn _is_kernel(&self) -> bool {
+        self._is_kernel
     }
 
     pub fn state(&self) -> TaskState {
@@ -591,7 +599,7 @@ impl Process {
         children.clear();
         drop(children);
 
-        let mut tasks = self.tasks.lock();
+        let tasks = self.tasks.lock();
         for task in tasks.values() {
             if task.state() != TaskState::Zombie {
                 let mut inner = task.signal.lock();
@@ -698,6 +706,10 @@ impl<'a> CurrentTask<'a> {
         TASK_MANAGER.lock().yield_current(self)
     }
 
+    pub fn block_and_yield(&self) {
+        TASK_MANAGER.lock().block_current(self)
+    }
+
     pub fn exit(&self, exit_code: i32) -> ! {
         self.set_state(TaskState::Zombie);
         self.set_exit_code(exit_code);
@@ -732,10 +744,14 @@ impl<'a> CurrentTask<'a> {
             let frozen_flag = inner.frozen;
             let killed_flag = inner.killed;
             drop(inner);
-            if (!frozen_flag) || killed_flag {
+            if killed_flag {
                 break;
             }
-            self.yield_now();
+            if frozen_flag {
+                self.block_and_yield();
+            } else {
+                break;
+            }
         }
         self.signal.lock().signals.check_error()
     }

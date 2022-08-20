@@ -27,6 +27,10 @@ static TESTS: &[&str] = &[
     "run_cmdline_args\0",
     "threads_arg\0",
     "threads\0",
+    "mpsc_sem\0",
+    "stackless_coroutine\0",
+    "sync_sem\0",
+    "test_condvar\0",
 ];
 
 use user_lib::{exec, fork, waitpid};

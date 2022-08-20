@@ -9,6 +9,7 @@ const SYSCALL_READ: usize = 63;
 const SYSCALL_WRITE: usize = 64;
 const SYSCALL_EXIT: usize = 93;
 const SYSCALL_EXIT_GROUP: usize = 94;
+const SYSCALL_SLEEP: usize = 101;
 const SYSCALL_YIELD: usize = 124;
 const SYSCALL_KILL: usize = 129;
 const SYSCALL_SIGACTION: usize = 134;
@@ -74,6 +75,10 @@ pub fn sys_exit(exit_code: i32) -> ! {
 pub fn sys_exit_group(exit_code: i32) -> ! {
     syscall(SYSCALL_EXIT_GROUP, [exit_code as usize, 0, 0]);
     panic!("sys_exit never returns!");
+}
+
+pub fn sys_sleep(sleep_ms: usize) -> isize {
+    syscall(SYSCALL_SLEEP, [sleep_ms, 0, 0])
 }
 
 pub fn sys_yield() -> isize {
@@ -144,4 +149,40 @@ pub fn sys_sigreturn() -> isize {
 
 pub fn sys_kill(pid: usize, signal: i32) -> isize {
     syscall(SYSCALL_KILL, [pid, signal as usize, 0])
+}
+
+pub fn sys_mutex_create(blocking: bool) -> isize {
+    syscall(SYSCALL_MUTEX_CREATE, [blocking as usize, 0, 0])
+}
+
+pub fn sys_mutex_lock(id: usize) -> isize {
+    syscall(SYSCALL_MUTEX_LOCK, [id, 0, 0])
+}
+
+pub fn sys_mutex_unlock(id: usize) -> isize {
+    syscall(SYSCALL_MUTEX_UNLOCK, [id, 0, 0])
+}
+
+pub fn sys_semaphore_create(res_count: usize) -> isize {
+    syscall(SYSCALL_SEMAPHORE_CREATE, [res_count, 0, 0])
+}
+
+pub fn sys_semaphore_up(sem_id: usize) -> isize {
+    syscall(SYSCALL_SEMAPHORE_UP, [sem_id, 0, 0])
+}
+
+pub fn sys_semaphore_down(sem_id: usize) -> isize {
+    syscall(SYSCALL_SEMAPHORE_DOWN, [sem_id, 0, 0])
+}
+
+pub fn sys_condvar_create(_arg: usize) -> isize {
+    syscall(SYSCALL_CONDVAR_CREATE, [_arg, 0, 0])
+}
+
+pub fn sys_condvar_signal(condvar_id: usize) -> isize {
+    syscall(SYSCALL_CONDVAR_SIGNAL, [condvar_id, 0, 0])
+}
+
+pub fn sys_condvar_wait(condvar_id: usize, mutex_id: usize) -> isize {
+    syscall(SYSCALL_CONDVAR_WAIT, [condvar_id, mutex_id, 0])
 }

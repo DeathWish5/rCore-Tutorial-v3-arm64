@@ -57,6 +57,11 @@ impl<S: Scheduler> TaskManager<S> {
         self.resched(curr_task);
     }
 
+    pub fn block_current(&mut self, curr_task: &CurrentTask) {
+        curr_task.set_state(TaskState::Blocking);
+        self.resched(curr_task);
+    }
+
     pub fn exit_current(&mut self, curr_task: &CurrentTask, exit_code: i32) -> ! {
         assert!(curr_task.state() == TaskState::Running || curr_task.state() == TaskState::Zombie);
 

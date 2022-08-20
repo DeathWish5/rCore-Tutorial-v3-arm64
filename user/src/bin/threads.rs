@@ -31,10 +31,6 @@ pub fn thread_c() -> ! {
 
 #[no_mangle]
 pub fn main() -> i32 {
-    println!(
-        "entry = {:x} {:x} {:x}",
-        thread_a as usize, thread_b as usize, thread_c as usize
-    );
     let v = vec![
         thread_create(thread_a as usize, 0),
         thread_create(thread_b as usize, 0),

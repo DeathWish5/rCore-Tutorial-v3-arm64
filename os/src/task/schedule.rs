@@ -1,11 +1,12 @@
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 
-use super::structs::Task;
+use super::structs::{Task, TaskState};
 
 pub trait Scheduler {
     fn add_ready_task(&mut self, t: &Arc<Task>);
     fn pick_next_task(&mut self) -> Option<Arc<Task>>;
+    fn block_task(&mut self, t: &Arc<Task>);
     fn timer_tick(&mut self);
 }
 
@@ -37,7 +38,22 @@ impl Scheduler for SimpleScheduler {
     }
 
     fn pick_next_task(&mut self) -> Option<Arc<Task>> {
-        self.ready_queue.pop_front().map(|s| s.task)
+        loop {
+            if let Some(task) = self.ready_queue.pop_front() {
+                match task.task.state() {
+                    TaskState::Ready => break Some(task.task),
+                    TaskState::Running => panic!("Invalid TaskState"),
+                    TaskState::Zombie => continue,
+                    TaskState::Blocking => continue,
+                }
+            } else {
+                break None;
+            }
+        }
+    }
+
+    fn block_task(&mut self, t: &Arc<Task>) {
+        t.set_state(TaskState::Blocking);
     }
 
     fn timer_tick(&mut self) {}

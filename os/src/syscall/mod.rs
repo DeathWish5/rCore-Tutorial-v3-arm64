@@ -16,7 +16,7 @@ const SYSCALL_KILL: usize = 129;
 const SYSCALL_SIGACTION: usize = 134;
 const SYSCALL_SIGPROCMASK: usize = 135;
 const SYSCALL_SIGRETURN: usize = 139;
-
+const SYSCALL_SLEEP: usize = 101;
 const SYSCALL_THREAD_CREATE: usize = 1000;
 const SYSCALL_GETTID: usize = 1001;
 const SYSCALL_WAITTID: usize = 1002;
@@ -33,10 +33,12 @@ const SYSCALL_CONDVAR_WAIT: usize = 1032;
 mod fs;
 mod process;
 mod signal;
+mod sync;
 mod thread;
 
 use self::fs::*;
 use self::process::*;
+use self::sync::*;
 use self::thread::*;
 use crate::trap::TrapFrame;
 use signal::*;
@@ -62,6 +64,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 3], tf: &mut TrapFrame) -> isize
         SYSCALL_SIGACTION => sys_sigaction(args[0] as _, args[1].into(), args[2].into()),
         SYSCALL_SIGPROCMASK => sys_sigprocmask(args[0] as _),
         SYSCALL_SIGRETURN => sys_sigretrun(tf),
+        SYSCALL_SLEEP => sys_sleep(args[0]),
         SYSCALL_THREAD_CREATE => sys_thread_create(args[0], args[1]),
         SYSCALL_GETTID => sys_gettid(),
         SYSCALL_WAITTID => sys_waittid(args[0]) as isize,
