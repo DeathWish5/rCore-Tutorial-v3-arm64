@@ -8,6 +8,7 @@ const SYSCALL_PIPE2: usize = 59;
 const SYSCALL_READ: usize = 63;
 const SYSCALL_WRITE: usize = 64;
 const SYSCALL_EXIT: usize = 93;
+const SYSCALL_EXIT_GROUP: usize = 94;
 const SYSCALL_YIELD: usize = 124;
 const SYSCALL_KILL: usize = 129;
 const SYSCALL_SIGACTION: usize = 134;
@@ -18,6 +19,19 @@ const SYSCALL_GETPID: usize = 172;
 const SYSCALL_FORK: usize = 220;
 const SYSCALL_EXEC: usize = 221;
 const SYSCALL_WAITPID: usize = 260;
+
+const SYSCALL_THREAD_CREATE: usize = 1000;
+const SYSCALL_GETTID: usize = 1001;
+const SYSCALL_WAITTID: usize = 1002;
+const SYSCALL_MUTEX_CREATE: usize = 1010;
+const SYSCALL_MUTEX_LOCK: usize = 1011;
+const SYSCALL_MUTEX_UNLOCK: usize = 1012;
+const SYSCALL_SEMAPHORE_CREATE: usize = 1020;
+const SYSCALL_SEMAPHORE_UP: usize = 1021;
+const SYSCALL_SEMAPHORE_DOWN: usize = 1022;
+const SYSCALL_CONDVAR_CREATE: usize = 1030;
+const SYSCALL_CONDVAR_SIGNAL: usize = 1031;
+const SYSCALL_CONDVAR_WAIT: usize = 1032;
 
 fn syscall(id: usize, args: [usize; 3]) -> isize {
     let ret;
@@ -57,6 +71,11 @@ pub fn sys_exit(exit_code: i32) -> ! {
     panic!("sys_exit never returns!");
 }
 
+pub fn sys_exit_group(exit_code: i32) -> ! {
+    syscall(SYSCALL_EXIT_GROUP, [exit_code as usize, 0, 0]);
+    panic!("sys_exit never returns!");
+}
+
 pub fn sys_yield() -> isize {
     syscall(SYSCALL_YIELD, [0, 0, 0])
 }
@@ -90,6 +109,18 @@ pub fn sys_open(path: &str, flags: u32) -> isize {
 
 pub fn sys_close(fd: usize) -> isize {
     syscall(SYSCALL_CLOSE, [fd, 0, 0])
+}
+
+pub fn sys_thread_create(entry: usize, arg: usize) -> isize {
+    syscall(SYSCALL_THREAD_CREATE, [entry, arg, 0])
+}
+
+pub fn sys_gettid() -> isize {
+    syscall(SYSCALL_GETTID, [0; 3])
+}
+
+pub fn sys_waittid(tid: usize) -> isize {
+    syscall(SYSCALL_WAITTID, [tid, 0, 0])
 }
 
 pub fn sys_sigaction(

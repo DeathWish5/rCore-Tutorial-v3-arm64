@@ -58,7 +58,7 @@ impl<S: Scheduler> TaskManager<S> {
     }
 
     pub fn exit_current(&mut self, curr_task: &CurrentTask, exit_code: i32) -> ! {
-        assert!(curr_task.state() == TaskState::Running);
+        assert!(curr_task.state() == TaskState::Running || curr_task.state() == TaskState::Zombie);
 
         curr_task.set_state(TaskState::Zombie);
         curr_task.set_exit_code(exit_code);

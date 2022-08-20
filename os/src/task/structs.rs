@@ -1,3 +1,4 @@
+use crate::config::{USER_STACK_SIZE, USER_STACK_TOP};
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
@@ -10,7 +11,7 @@ use super::switch::TaskContext;
 use crate::config::KERNEL_STACK_SIZE;
 use crate::fs::{open_file, OpenFlags};
 use crate::fs::{File, Stdin, Stdout};
-use crate::mm::{MemorySet, PhysAddr};
+use crate::mm::{MapArea, MemFlags, MemorySet, PhysAddr, VirtAddr, PAGE_SIZE};
 use crate::sync::{LazyInit, Mutex};
 use crate::trap::TrapFrame;
 
@@ -35,6 +36,14 @@ pub enum TaskState {
     Zombie = 3,
 }
 
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ProcState {
+    Normal = 1,
+    Stop = 2,
+    Zombie = 3,
+}
+
 pub struct Task {
     tid: TaskId,
     is_kernel: bool,
@@ -44,14 +53,15 @@ pub struct Task {
     exit_code: AtomicI32,
     kstack: Stack<KERNEL_STACK_SIZE>,
     ctx: TaskLockedCell<TaskContext>,
+    pub signal: Mutex<SignalInner>,
 }
 
 pub struct Process {
     id: ProcId,
     is_kernel: bool,
-    is_zombie: AtomicBool,
+    state: AtomicU8,
     exit_code: AtomicI32,
-    vm: Mutex<Option<MemorySet>>,
+    pub vm: Mutex<Option<MemorySet>>,
 
     pub tasks: Mutex<BTreeMap<usize, Arc<Task>>>,
     tid_allocator: IdAllocator,
@@ -59,7 +69,7 @@ pub struct Process {
     pub parent: Mutex<Weak<Process>>,
     pub children: Mutex<Vec<Arc<Process>>>,
     pub fd_table: Mutex<Vec<Option<Arc<dyn File + Send + Sync>>>>,
-    pub signal: Mutex<SignalInner>,
+    pub signal_actions: Mutex<SignalActions>,
 }
 
 pub struct SignalInner {
@@ -67,8 +77,6 @@ pub struct SignalInner {
     pub signal_mask: SignalFlags,
     // the signal which is being handling
     pub handling_sig: Option<usize>,
-    // Signal actions
-    pub signal_actions: SignalActions,
     // if the task is killed
     pub killed: bool,
     // if the task is frozen by a signal
@@ -141,11 +149,22 @@ impl From<u8> for TaskState {
     }
 }
 
+impl From<u8> for ProcState {
+    fn from(state: u8) -> Self {
+        match state {
+            1 => Self::Normal,
+            2 => Self::Stop,
+            3 => Self::Zombie,
+            _ => panic!("invalid proc state: {}", state),
+        }
+    }
+}
+
 impl Process {
     fn new_common(id: ProcId, is_kernel: bool) -> Self {
         Self {
             id,
-            is_zombie: AtomicBool::from(false),
+            state: AtomicU8::new(ProcState::Normal as u8),
             is_kernel,
             exit_code: AtomicI32::new(0),
             vm: Mutex::new(None),
@@ -161,21 +180,13 @@ impl Process {
                 // 2 -> stderr
                 Some(Arc::new(Stdout)),
             ]),
-            signal: Mutex::new(SignalInner {
-                signals: SignalFlags::empty(),
-                signal_mask: SignalFlags::empty(),
-                handling_sig: None,
-                signal_actions: SignalActions::default(),
-                killed: false,
-                frozen: false,
-                mask_backup: None,
-                trapframe_backup: None,
-            }),
+            signal_actions: Mutex::new(SignalActions::default()),
         }
     }
 
     pub fn new_idle() -> Arc<Self> {
         let t = Arc::new(Self::new_common(ProcId::IDLE_TASK_ID, true));
+        assert!(ProcId::alloc().as_usize() == 0);
         let task = Task::new_common(t.alloc_tid(), true, &t);
         task.set_state(TaskState::Running);
         t.add_task(Arc::new(task));
@@ -186,7 +197,6 @@ impl Process {
         let t = Arc::new(Self::new_common(ProcId::alloc(), true));
         let task = Task::new_kernel(t.alloc_tid(), &t, entry, arg);
         t.add_task(task);
-
         if !t.is_root() {
             ROOT_PROC.add_child(&t);
         }
@@ -214,6 +224,33 @@ impl Process {
         t
     }
 
+    pub fn user_stack(tid: usize) -> (usize, usize) {
+        let top = USER_STACK_TOP - tid * (USER_STACK_SIZE + PAGE_SIZE);
+        let bottom = top - USER_STACK_SIZE;
+        (bottom, top)
+    }
+
+    pub fn new_user_task(self: &Arc<Self>, entry: usize, arg: usize) -> Arc<Task> {
+        let tid = self.tid_allocator.alloc();
+        // user stack
+        let mut vm = self.vm.lock();
+        let (ustack_bottom, ustack_top) = Self::user_stack(tid);
+        vm.as_mut().unwrap().insert(MapArea::new_framed(
+            VirtAddr::new(ustack_bottom),
+            USER_STACK_SIZE,
+            MemFlags::READ | MemFlags::WRITE | MemFlags::USER,
+        ));
+        info!(
+            "{:x} = {:x?}",
+            entry,
+            vm.as_ref().unwrap().pt().query(VirtAddr::new(entry))
+        );
+        drop(vm);
+        let task = Task::new_user(tid.into(), self, entry, ustack_top, arg);
+        self.tasks.lock().insert(tid, task.clone());
+        task
+    }
+
     pub fn new_fork(self: &Arc<Self>, tf: &TrapFrame) -> Arc<Self> {
         assert!(!self.is_kernel());
         let t = Arc::new(Self::new_common(ProcId::alloc(), false));
@@ -225,6 +262,8 @@ impl Process {
         task.ctx
             .get_mut()
             .init(task_entry as _, task.kstack.top(), vm.page_table_root());
+
+        t.tasks.lock().insert(task.tid().as_usize(), Arc::new(task));
 
         *t.vm.lock() = Some(vm);
         // copy fd table
@@ -255,68 +294,6 @@ impl Process {
         fd
     }
 
-    pub fn set_singal(&self, signal: SignalFlags) {
-        let mut inner = self.signal.lock();
-        inner.signals |= signal;
-    }
-
-    pub fn singal_metadata(&self) -> (SignalFlags, Option<SignalFlags>) {
-        let inner = self.signal.lock();
-        let masked_signal = inner.signals & inner.signal_mask;
-        if let Some(sig) = inner.handling_sig {
-            let action_mask = inner.signal_actions.table[sig].mask;
-            (masked_signal, Some(action_mask))
-        } else {
-            (masked_signal, None)
-        }
-    }
-
-    fn kernel_signal_handler(&self, signal: SignalFlags) {
-        let mut inner = self.signal.lock();
-        match signal {
-            SignalFlags::SIGSTOP => {
-                inner.frozen = true;
-                inner.signals ^= SignalFlags::SIGSTOP;
-            }
-            SignalFlags::SIGCONT => {
-                if inner.signals.contains(SignalFlags::SIGCONT) {
-                    inner.signals ^= SignalFlags::SIGCONT;
-                    inner.frozen = false;
-                }
-            }
-            _ => {
-                info!(
-                    "[K] call_kernel_signal_handler:: current task sigflag {:?}",
-                    inner.signals
-                );
-                inner.killed = true;
-            }
-        }
-    }
-
-    fn user_signal_handler(&self, sig: usize, tf: &mut TrapFrame) {
-        let mut inner = self.signal.lock();
-        let handler = inner.signal_actions.table[sig].handler;
-        if handler != 0 {
-            // backup mask
-            inner.mask_backup = Some(inner.signal_mask);
-            // change current mask
-            inner.signal_mask = inner.signal_actions.table[sig].mask;
-            // handle flag
-            inner.handling_sig = Some(sig);
-            inner.signals ^= SignalFlags::from_bits(1 << sig).unwrap();
-            // backup and modify trapframe
-            inner.trapframe_backup = Some(*tf);
-            // set entry point
-            tf.elr = handler as _;
-            // set arg0
-            tf.r[0] = sig as _;
-        } else {
-            // default action
-            info!("[K] task/call_user_signal_handler: default action: ignore it or kill process");
-        }
-    }
-
     pub fn alloc_tid(&self) -> TaskId {
         self.tid_allocator.alloc().into()
     }
@@ -333,7 +310,14 @@ impl Process {
     }
 
     pub fn task_count(&self) -> usize {
-        self.tasks.lock().len()
+        let tasks = self.tasks.lock();
+        let mut count = 0;
+        for task in tasks.values() {
+            if task.state() != TaskState::Zombie {
+                count += 1;
+            }
+        }
+        count
     }
 
     pub fn task(&self) -> Arc<Task> {
@@ -356,8 +340,12 @@ impl Process {
         self.id.as_usize() == 0
     }
 
-    pub fn is_zombie(&self) -> bool {
-        self.is_zombie.load(Ordering::SeqCst)
+    pub fn state(&self) -> ProcState {
+        self.state.load(Ordering::SeqCst).into()
+    }
+
+    pub fn set_state(&self, state: ProcState) {
+        self.state.store(state as u8, Ordering::SeqCst)
     }
 
     pub fn pid(&self) -> ProcId {
@@ -374,6 +362,10 @@ impl Process {
 
     pub fn set_exit_code(&self, exit_code: i32) {
         self.exit_code.store(exit_code, Ordering::SeqCst)
+    }
+
+    pub fn page_table_root(&self) -> PhysAddr {
+        self.vm.lock().as_ref().unwrap().page_table_root()
     }
 
     #[allow(unused)]
@@ -398,6 +390,15 @@ impl Task {
 
             kstack: Stack::default(),
             ctx: TaskLockedCell::new(TaskContext::default()),
+            signal: Mutex::new(SignalInner {
+                signals: SignalFlags::empty(),
+                signal_mask: SignalFlags::empty(),
+                handling_sig: None,
+                killed: false,
+                frozen: false,
+                mask_backup: None,
+                trapframe_backup: None,
+            }),
         }
     }
 
@@ -416,6 +417,91 @@ impl Task {
             .get_mut()
             .init(task_entry as _, t.kstack.top(), PhysAddr::new(0));
         Arc::new(t)
+    }
+
+    pub fn new_user(
+        tid: TaskId,
+        proc: &Arc<Process>,
+        entry: usize,
+        ustack_top: usize,
+        arg: usize,
+    ) -> Arc<Self> {
+        assert!(tid.as_usize() <= 16);
+        let mut t = Self::new_common(tid, true, proc);
+        // TODO: recycle user stack
+        t.entry = EntryState::User(Box::new(TrapFrame::new_user_arg(
+            entry, ustack_top, arg as _, 0,
+        )));
+        let token = t
+            .ctx
+            .get_mut()
+            .init(task_entry as _, t.kstack.top(), proc.page_table_root());
+        Arc::new(t)
+    }
+
+    pub fn set_singal(&self, signal: SignalFlags) {
+        let mut inner = self.signal.lock();
+        inner.signals |= signal;
+    }
+
+    pub fn singal_metadata(&self) -> (SignalFlags, Option<SignalFlags>) {
+        let inner = self.signal.lock();
+        let masked_signal = inner.signals & inner.signal_mask;
+        if let Some(sig) = inner.handling_sig {
+            let action = self.proc().signal_actions.lock().table[sig];
+            let action_mask = action.mask;
+            (masked_signal, Some(action_mask))
+        } else {
+            (masked_signal, None)
+        }
+    }
+
+    fn kernel_signal_handler(&self, signal: SignalFlags) {
+        let mut inner = self.signal.lock();
+        match signal {
+            SignalFlags::SIGSTOP => {
+                inner.frozen = true;
+                inner.signals ^= SignalFlags::SIGSTOP;
+            }
+            SignalFlags::SIGCONT => {
+                if inner.signals.contains(SignalFlags::SIGCONT) {
+                    inner.signals ^= SignalFlags::SIGCONT;
+                    inner.frozen = false;
+                }
+            }
+            // SIGKILL | SIGDEF
+            _ => {
+                info!(
+                    "[K] call_kernel_signal_handler:: current task sigflag {:?}",
+                    inner.signals
+                );
+                inner.killed = true;
+            }
+        }
+    }
+
+    fn user_signal_handler(&self, sig: usize, tf: &mut TrapFrame) {
+        let action = self.proc().signal_actions.lock().table[sig];
+        let mut inner = self.signal.lock();
+        let handler = action.handler;
+        if handler != 0 {
+            // backup mask
+            inner.mask_backup = Some(inner.signal_mask);
+            // change current mask
+            inner.signal_mask = action.mask;
+            // handle flag
+            inner.handling_sig = Some(sig);
+            inner.signals ^= SignalFlags::from_bits(1 << sig).unwrap();
+            // backup and modify trapframe
+            inner.trapframe_backup = Some(*tf);
+            // set entry point
+            tf.elr = handler as _;
+            // set arg0
+            tf.r[0] = sig as _;
+        } else {
+            // default action
+            info!("[K] task/call_user_signal_handler: default action: ignore it or kill process");
+        }
     }
 
     pub fn proc(&self) -> Arc<Process> {
@@ -493,7 +579,7 @@ fn push_c_str(stack: usize, val: &String) -> usize {
 }
 
 impl Process {
-    pub fn exit(&self, exit_code: i32) {
+    pub fn stop(&self, exit_code: i32) {
         assert!(!self.is_idle());
         assert!(!self.is_root());
 
@@ -503,21 +589,34 @@ impl Process {
             ROOT_PROC.add_child(c);
         }
         children.clear();
+        drop(children);
 
-        // drop memory set
-        *self.vm.lock() = None;
-
-        self.is_zombie.store(true, Ordering::SeqCst);
+        let mut tasks = self.tasks.lock();
+        for task in tasks.values() {
+            if task.state() != TaskState::Zombie {
+                let mut inner = task.signal.lock();
+                if !inner.signals.contains(SignalFlags::SIGKILL) {
+                    inner.signals.insert(SignalFlags::SIGKILL);
+                }
+            }
+        }
+        drop(tasks);
+        self.set_state(ProcState::Stop);
         self.set_exit_code(exit_code);
     }
 
-    pub fn task_exit(&self, tid: TaskId, exit_code: i32) {
-        let mut tasks = self.tasks.lock();
-        if let Some(_task) = tasks.remove(&tid.as_usize()) {
-            // print some message ?
-        }
-        if tasks.is_empty() {
-            self.exit(exit_code);
+    pub fn exit(&self) {
+        self.set_state(ProcState::Zombie);
+        // drop memory set
+        *self.vm.lock() = None;
+    }
+
+    pub fn task_exit(&self, _tid: usize, exit_code: i32) {
+        if self.task_count() == 0 {
+            if self.state() == ProcState::Normal {
+                self.set_exit_code(exit_code);
+            }
+            self.exit();
         }
     }
 
@@ -554,7 +653,7 @@ impl Process {
         for (idx, t) in children.iter().enumerate() {
             if pid == -1 || t.pid().as_usize() == pid as usize {
                 found_pid = true;
-                if t.is_zombie() {
+                if t.state() == ProcState::Zombie {
                     let child = children.remove(idx);
                     PROC_MAP.lock().remove(&child.pid().as_usize());
                     assert_eq!(Arc::strong_count(&child), 1);
@@ -568,6 +667,42 @@ impl Process {
         } else {
             -1
         }
+    }
+
+    pub fn waittid(&self, tid: usize) -> isize {
+        let mut tasks = self.tasks.lock();
+        if let Some(waited_task) = tasks.get(&tid).as_ref() {
+            if let TaskState::Zombie = waited_task.state() {
+                let code = waited_task.exit_code();
+                drop(waited_task);
+                tasks.remove(&tid);
+                code as isize
+            } else {
+                -2
+            }
+        } else {
+            // waited thread does not exist
+            -1
+        }
+    }
+}
+
+pub struct CurrentTask<'a>(pub &'a Arc<Task>);
+
+impl<'a> CurrentTask<'a> {
+    pub fn get() -> Self {
+        Self(PerCpu::current().current_task())
+    }
+
+    pub fn yield_now(&self) {
+        TASK_MANAGER.lock().yield_current(self)
+    }
+
+    pub fn exit(&self, exit_code: i32) -> ! {
+        self.set_state(TaskState::Zombie);
+        self.set_exit_code(exit_code);
+        self.proc().task_exit(self.tid().as_usize(), exit_code);
+        TASK_MANAGER.lock().exit_current(self, exit_code)
     }
 
     fn check_pending_signals(&self, tf: &mut TrapFrame) -> Option<SignalFlags> {
@@ -589,29 +724,11 @@ impl Process {
         }
         None
     }
-}
-
-pub struct CurrentTask<'a>(pub &'a Arc<Task>);
-
-impl<'a> CurrentTask<'a> {
-    pub fn get() -> Self {
-        Self(PerCpu::current().current_task())
-    }
-
-    pub fn yield_now(&self) {
-        TASK_MANAGER.lock().yield_current(self)
-    }
-
-    pub fn exit(&self, exit_code: i32) -> ! {
-        self.proc().task_exit(self.tid().into(), exit_code);
-        TASK_MANAGER.lock().exit_current(self, exit_code)
-    }
 
     pub fn handle_signals(&self, tf: &mut TrapFrame) -> Option<(i32, &'static str)> {
         loop {
-            let proc = self.proc();
-            proc.check_pending_signals(tf);
-            let inner = proc.signal.lock();
+            self.check_pending_signals(tf);
+            let inner = self.signal.lock();
             let frozen_flag = inner.frozen;
             let killed_flag = inner.killed;
             drop(inner);
@@ -620,7 +737,7 @@ impl<'a> CurrentTask<'a> {
             }
             self.yield_now();
         }
-        self.proc().signal.lock().signals.check_error()
+        self.signal.lock().signals.check_error()
     }
 }
 

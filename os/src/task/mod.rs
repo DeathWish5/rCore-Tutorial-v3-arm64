@@ -9,7 +9,7 @@ use alloc::sync::Arc;
 
 pub use manager::pid2proc;
 pub use signal::*;
-pub use structs::{CurrentTask, ProcId};
+pub use structs::{CurrentTask, ProcId, TaskState};
 
 use self::manager::{PROC_MAP, TASK_MANAGER};
 use self::structs::{Process, Task, ROOT_PROC};

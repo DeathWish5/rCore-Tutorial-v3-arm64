@@ -7,6 +7,8 @@ use core::arch::global_asm;
 use cortex_a::registers::{ESR_EL1, FAR_EL1, VBAR_EL1};
 use tock_registers::interfaces::{Readable, Writeable};
 
+use crate::mm::VirtAddr;
+
 use crate::{syscall::syscall, task::CurrentTask};
 
 global_asm!(include_str!("trap.S"));

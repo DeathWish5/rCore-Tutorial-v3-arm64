@@ -25,6 +25,8 @@ static TESTS: &[&str] = &[
     "sig_simple2\0",
     "sig_tests\0",
     "run_cmdline_args\0",
+    "threads_arg\0",
+    "threads\0",
 ];
 
 use user_lib::{exec, fork, waitpid};

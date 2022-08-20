@@ -89,6 +89,9 @@ pub fn write(fd: usize, buf: &[u8]) -> isize {
 pub fn exit(exit_code: i32) -> ! {
     sys_exit(exit_code);
 }
+pub fn exit_group(exit_code: i32) -> ! {
+    sys_exit_group(exit_code);
+}
 pub fn sched_yield() -> isize {
     sys_yield()
 }
@@ -140,6 +143,25 @@ pub fn sleep(period_ms: usize) {
 
 pub fn kill(pid: usize, signal: i32) -> isize {
     sys_kill(pid, signal)
+}
+
+pub fn thread_create(entry: usize, arg: usize) -> isize {
+    sys_thread_create(entry, arg)
+}
+
+pub fn gettid() -> isize {
+    sys_gettid()
+}
+
+pub fn waittid(tid: usize) -> isize {
+    loop {
+        match sys_waittid(tid) {
+            -2 => {
+                sched_yield();
+            }
+            exit_code => return exit_code,
+        }
+    }
 }
 
 pub fn sigaction(

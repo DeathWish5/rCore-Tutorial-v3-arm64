@@ -4,7 +4,7 @@ use core::fmt;
 use super::address::{align_down, is_aligned, phys_to_virt, virt_to_phys};
 use super::{MemFlags, PageTable, PhysFrame, PAGE_SIZE};
 use crate::arch;
-use crate::config::{MEMORY_END, MMIO_REGIONS, USER_STACK_BASE, USER_STACK_SIZE};
+use crate::config::{MEMORY_END, MMIO_REGIONS, USER_STACK_SIZE, USER_STACK_TOP};
 use crate::mm::{PhysAddr, VirtAddr};
 use crate::sync::LazyInit;
 
@@ -143,6 +143,10 @@ impl MemorySet {
         }
     }
 
+    pub fn pt(&self) -> &PageTable {
+        &self.pt
+    }
+
     pub fn insert(&mut self, area: MapArea) {
         if !area.size > 0 {
             // TODO: check overlap
@@ -216,15 +220,16 @@ impl MemorySet {
             self.insert(area);
             crate::arch::flush_icache_all();
         }
+
         // user stack
         self.insert(MapArea::new_framed(
-            VirtAddr::new(USER_STACK_BASE),
+            VirtAddr::new(USER_STACK_TOP - USER_STACK_SIZE),
             USER_STACK_SIZE,
             MemFlags::READ | MemFlags::WRITE | MemFlags::USER,
         ));
 
         let entry = elf.header.pt2.entry_point() as usize;
-        let ustack_top = USER_STACK_BASE + USER_STACK_SIZE;
+        let ustack_top = USER_STACK_TOP;
         (entry, ustack_top)
     }
 
