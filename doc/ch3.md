@@ -1,17 +1,17 @@
 ## chapter3
 
-ch3 我们完成了任务切换和时钟中断管理。
+ch3 我们完成了任务切换和时钟中断管理。本节先介绍任务上下文结合体以及切换的核心汇编程序，然后介绍时钟中断的初始化以及中断的整体处理流程（此时中断只有时钟中断）。
 
 ### 任务上下文与任务切换
 
-为了完成任务切换，我们需要实现一段保存和恢复别调用着保存寄存器的汇编。由于我们选用的内存模型，我们理论上还需要更换进程页表，但 ch3 还没有使能页表，所以我们留到 ch4 再处理。
+为了完成任务切换，我们需要实现一段保存和恢复"被调用者保存寄存器"的汇编。由于我们选用的内存模型，理论上还需要更换进程页表，但 ch3 还没有使能页表，所以我们留到 ch4 再处理页表切换。
 
-类似与其他架构，任务切换需要保存和恢复
+类似与其他架构，任务切换需要保存和恢复:
 
-* sp: 栈指针，这里对应 SP_EL1。
-* ra: 返回地址，在 arm64 中为 x30 寄存器。
-* 被调用这保存寄存器，在 arm64 中为 x19~x29 寄存器。
-* TPIDR寄存器，Thread Process ID Registers，也就是线程局部存储寄存器，该寄存器也属于线程私有资源，需要保存和恢复。不过本实验由于用户态比较简单，其实并不会用到。
+* 栈指针：这里对应 `SP_EL1`。
+* 返回地址：这里对应 `x30` 寄存器。
+* 被调用者保存寄存器：在 arm64 中为 x19~x29 寄存器。
+* tp寄存器：TPDR （Thread Process ID Registers），也就是线程局部存储寄存器，也可以将该寄存器存储在 `trapframe` 中，但该寄存器在内核中不会使用，所以这里放在了任务上下文中。
 
 任务上下文结构体定义如下：
 
@@ -26,7 +26,7 @@ pub struct TaskContext {
 }
 ```
 
-我们使用一个内联函数完成任务上下文切换，比较简单的保存和恢复。
+我们使用一个内联函数完成任务上下文切换，比较简单的保存和恢复：
 
 ```rust
 pub unsafe fn context_switch(current_task: &mut TaskContext, next_task: &TaskContext) {
@@ -52,7 +52,7 @@ pub unsafe fn context_switch(current_task: &mut TaskContext, next_task: &TaskCon
         ...
         ldp     x27, x28, [x1, 10 * 8]
         ldp     x29, x30, [x1, 12 * 8]
-
+		
         ret",
         in("x0") current_task,
         in("x1") next_task,
@@ -62,15 +62,37 @@ pub unsafe fn context_switch(current_task: &mut TaskContext, next_task: &TaskCon
 
 ```
 
+任务切换函数如下：
+
+```rust
+fn switch_to(&self, curr_task: &Arc<Task>, next_task: Arc<Task>) {
+    // 设置即将运行的进程状态
+    next_task.set_state(TaskState::Running);
+    // 若 next_task = curr_task，直接退出
+    if Arc::ptr_eq(curr_task, &next_task) {
+        return;
+    }
+	// 获取上下文结构体指针
+    let curr_ctx_ptr = curr_task.context().as_ptr();
+    let next_ctx_ptr = next_task.context().as_ptr();
+	// 更新`当前进程`信息
+    PerCpu::current().set_current_task(next_task);
+	// 调用 context_switch 函数完成切换
+    unsafe { context_switch(&mut *curr_ctx_ptr, &*next_ctx_ptr) };
+}
+```
+
 ### 时钟中断处理
+
+时钟中断是我们处理的第一个中断，这里介绍时钟中断的初始化以及处理。
 
 时钟相关寄存器:
 
 * CNTP_CTL: Counter-timer Physical Control Register，控制寄存器，控制时钟中断使能。
 
 * CNTFRQ: Counter-timer Frequency Register，时钟频率寄存器。
-* CNTPCT: Counter-timer Physical Count Register，当前时钟计数。
-* CNTP_CVAL: Counter-timer Physical Timer Compare Value Register。CNTPCT 达到何值时，产生一个时钟中断。
+* CNTPCT: Counter-timer Physical Count Register，储存当前 cycle 计数的寄存器。
+* CNTP_CVAL: Counter-timer Physical Timer Compare Value Register。比较寄存器，CNTPCT 达到该值时会产生一个时钟中断。
 * CNTP_TVAL: Counter-timer Physical Timer Value Register。与 CNTP_CVAL 相关联的特殊寄存器，当写入一个值的时候，CNTP_CVAL 自动设定为 CNTPCT + CNTP_TVAL，可以方便的更新 CNTP_CVAL。
 
 时钟中断相关函数：
@@ -98,15 +120,15 @@ pub fn init() {
 }
 ```
 
-时钟中断的全局使能和处理需要了解 GIC (Generic Interrupt Controller) 相关的内容，感兴趣的同学可以看[GIC](https://developer.arm.com/documentation/ihi0069/latest) 。这里我们只需要知道，读写对应的内存地址可以
+时钟中断的全局使能处理需要了解 GIC (Generic Interrupt Controller) 相关的内容，这是一个处理和分发中断的外设，类似 riscv 的 PLIC。时钟中断也被 GIC 所控制。感兴趣的同学可以看[GIC](https://developer.arm.com/documentation/ihi0069/latest) 。这里我们只需要知道，读写对应的内存地址可以
 
 1. 使能/禁止不同中断。
 
-2. 读取 pending 的中断信息，如中断类型。
+2. 读取待处理的中断信息，如中断类型。
 
 3. 清除pending的中断，也就是告知中断处理完毕。
 
-利用 GIC 的功能1，实现了 `irq_set_mask` 也就是开启全局中断。利用功能2、3，以及 ch2 中提到的中断异常处理代码，我们实现了时钟中断的处理。
+正是利用 GIC 的功能1，我们实现了 `irq_set_mask` (开启全局中断)。利用功能2、3，以及 ch2 中提到的中断异常处理代码，我们实现了时钟中断的处理。
 
 时钟中断属于一种 IRQ，所以中断入口在 ch2 提到的 `HANDLE_IRQ` 向量，该向量会进一步调用 `handle_irq_exception` 函数，我们来看看该函数的实现：
 
@@ -130,7 +152,7 @@ pub fn handle_irq() -> IrqHandlerResult {
     if let Some(vector) = GIC.pending_irq() {
         let res = match vector {
             // 如果是时钟中断
-            30 => {
+            TIMER => {
                 // 设置下一次时钟中断
                 crate::timer::set_next_trigger();
                 // 告知外部需要切换任务

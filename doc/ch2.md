@@ -1,6 +1,6 @@
 ## chapter2
 
-ch2 主要完成了内核态(el1)/用户态(el0)的切换以及系统调用这一异常的处理。我们首先简单介绍 arm 异常处理的架构。
+ch2 主要完成了内核态(el1)/用户态(el0)的切换以及系统调用这一异常的处理。本节首先简单介绍 arm 异常处理的架构，然后解释代码中 trapframe 的保存与恢复以及中断入口代码设置，最后简单介绍中断处理大致流程以及新任务 trapframe 的初始化。
 
 ### ARM 异常处理简介
 
@@ -8,10 +8,10 @@ ch2 主要完成了内核态(el1)/用户态(el0)的切换以及系统调用这�
 
 arm 异常分为两大类:
 
-* 同步异常: 指指令执行过程中发生错误而产生的同步错误或者特殊指令，可主要分为 Aborts 与系统调用。
-    * Aborts: 指在指令执行发生错误时触发，如取指错误（Instruction Abort）、数据访问异常(Data Abort)、使用非法寄存器以及除零等。地址访问异常对应 page fault 我们之后在 ch4 会处理，而其他种类的异常一般代表发生了不可恢复的错误，将用户程序杀死即可。
-    * 系统调用: 之希望获取更高特权级服务而通过执行异常产生指令刻意触发的异常。有 `svc`、`hvc`、`smc`，其中 `svc` 用于用户态向内核态提出请求，也是我们该节要主要处理的内容。
-* 异步中断: 指不是由于指令执行，而是外部事件产生的异步陷入。可分为 IRQ, FIQ, SError，该实验中，我们仅考虑时钟中断对应的 Irq，不处理其他类型的中断。
+* (同步)异常: 指指令执行过程中发生的错误或者特殊指令，可主要分为 Aborts 与系统调用。
+    * Aborts: 指令执行发生错误时触发，如取指错误（Instruction Abort）、数据访问异常(Data Abort)、使用非法寄存器以及除零错等。地址访问异常对应的 page fault 我们之后在 ch4 会处理，而其他种类的异常一般代表发生了不可恢复的错误，将用户程序杀死即可。
+    * 系统调用: 指希望获取更高特权级服务而执行"异常产生指令"刻意触发的异常。异常产生指令包括 `svc`、`hvc`、`smc`，其中 `svc` 用于用户态向内核态提出请求，也是我们该节要主要处理的内容。
+* (异步)中断: 指不是由于指令执行，而是外部事件产生的异步陷入。可分为 IRQ, FIQ, SError，该实验中，我们仅考虑时钟中断对应的 IRQ，不处理其他类型的中断。
 
 > 一些其他的特殊类型异常该实验不考虑。
 
@@ -36,25 +36,25 @@ arm 异常分为两大类:
 当异常发生时发生，硬件会自动执行一系列动作：
 
 * 将原有 PSTATE 寄存器状态保存在 SPSR_EL1 中，保存中断原因到 ESR，保存访存到 FAR(如有必要)，保存 PC 到 ELR。
-* 更新 PSTATE 寄存器（改变特权级，屏蔽中断使能，使用新特权级的栈）。
+* 更新 PSTATE 寄存器（改变特权级，屏蔽中断使能）。
 * 根据 VBAR 以及中断类型更新 PC。
 
 ![异常处理](https://documentation-service.arm.com/static/5f872814405d955c5176de2c?token=)
 
-其中，arm 并不会直接跳转到 VBAR 开始执行，而是跳转到 VBAR + offset，offset 取决于异常类型和来源，每种异常占用 0x80 的一个向量。我们需要关注的几个 offset 见下表([完整表见这里](https://developer.arm.com/documentation/100933/0100/AArch64-exception-vector-table))。
+这里需要注意，arm 发生异常并不会直接跳转到 VBAR 开始执行，而是跳转到 VBAR + offset，offset 取决于异常类型和来源，每种异常占用 0x80 字节的一个向量。我们需要关注的几个 offset 见下表([完整表见这里](https://developer.arm.com/documentation/100933/0100/AArch64-exception-vector-table))。
 
-| Address(VBAR + offset) | **Exception type** | Exception Level |
-| :--------------------: | :----------------: | :-------------: |
-| VBAR+0x200 (0x80 * 4)  |      同步异常      |   Current EL    |
-| VBAR+0x280 (0x80 * 5)  |        IRQ         |   Current EL    |
-| VBAR+0x400 (0x80 * 8)  |      同步异常      |    Lower EL     |
-| VBAR+0x480 (0x80 * 9)  |        IRQ         |    Lower EL     |
+|        Address        | **Exception type** | Exception Level |
+| :-------------------: | :----------------: | :-------------: |
+| VBAR+0x200 (0x80 * 4) |      同步异常      |   当前特权级    |
+| VBAR+0x280 (0x80 * 5) |        IRQ         |   当前特权级    |
+| VBAR+0x400 (0x80 * 8) |      同步异常      |    低特权级     |
+| VBAR+0x480 (0x80 * 9) |        IRQ         |    低特权级     |
 
 #### 异常返回
 
 在异常处理完成之后，使用 `eret` 指令可以进行异常返回，硬件会执行如下动作：
 
-* 根据 SPSR_EL1 恢复 PSTATE 寄存器（恢复特权级，栈，中断使能）。
+* 根据 SPSR_EL1 恢复 PSTATE 寄存器（恢复特权级，中断使能）。
 * 根据 ELR 恢复 PC。
 
 
@@ -180,7 +180,7 @@ exception_vector_base:
 .endm
 ```
 
-可以看到，这个宏定义这段代码按照 0x80 字节对其，也就正好和异常跳转的偏移相对应。对以不关注的异常，我们调用 `invalid_exception`，三个参数分别为 trapframe 指针、中断类型、中断来源，调用完成后进行异常返回。同步异常和 IRQ 处理向量如下：
+可以看到，这个宏定义这段代码按照 0x80 字节对其，也就正好和异常跳转的偏移相对应。 `invalid_exception`三个参数（也就是`x0` `x1` `x2`）分别为 trapframe 指针、中断类型、中断来源，调用完成后进行异常返回。同步异常和 IRQ 处理向量如下：
 
 ```assembly
 .macro HANDLE_SYNC
@@ -200,7 +200,9 @@ exception_vector_base:
 .endm
 ```
 
-这里只是传入 trapframe 指针，调用处理函数，最后异常返回。同步异常处理函数如下：
+这里只是传入 trapframe 指针，调用处理函数，最后异常返回。
+
+其中同步异常处理函数如下：
 
 ```rust
 #[no_mangle]
@@ -210,6 +212,7 @@ fn handle_sync_exception(cx: &mut TrapContext) {
         // 系统调用
         Some(ESR_EL1::EC::Value::SVC64) => {
             cx.x[0] = syscall(cx.x[8], [cx.x[0], cx.x[1], cx.x[2]]) as usize
+           	// arm 中调用 svc 触发 syscall 后，elr 中记录的本身就是下一条指令的 pc，所以这里无需改变 pc
         }
         // 数据访问异常
         Some(ESR_EL1::EC::Value::DataAbortLowerEL)
@@ -233,11 +236,11 @@ fn handle_sync_exception(cx: &mut TrapContext) {
 }
 ```
 
-
+其中，关于如何通过 `ESR` 寄存器判断中断原因的详细资料见[ESR_EL1](https://developer.arm.com/documentation/ddi0595/2020-12/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-)，不过事实上我们使用外部库来帮助我们完成区分。
 
 ### 第一次进入用户态
 
-返回到用户态分两种情况，其一是是处理完异常之后返回，其二第一次执行一个用户程序。事实上我们将这二者视作同一类型，区别在于第一次执行的时候，程序的状态是由我们设定的，如 ELR, PSTATE，SP 等，这些信息储存在 Trapframe 中。如下是初始化构造一个 Trapframe 的函数：
+返回到用户态分两种情况，其一是是处理完异常之后返回，其二是第一次执行一个用户程序。事实上我们将这二者视作同一类型，区别在于第一次执行的时候，程序的状态是由我们设定的，如 ELR, PSTATE，SP 等，这些信息储存在 Trapframe 中。如下是初始化构造一个 Trapframe 的函数：
 
 ```rust
 impl TrapContext {

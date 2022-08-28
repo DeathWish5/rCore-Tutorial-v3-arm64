@@ -1,6 +1,6 @@
 ## chapter1
 
-ch1 主要完成 boot, 串口输出和关机的功能。
+ch1 主要完成 boot, 串口输出和关机的功能。该节将以此介绍这三个功能的实现。
 
 ### boot
 
@@ -46,9 +46,7 @@ SECTIONS
 }
 ```
 
-linker.ld 定义把 `*(.text.entry)` 段所标注的代码放在刚才所说的起始地址。注意这里的 `ENTRY` 其实标注了 elf 的入口地址，在这里其实是没有用的。
-
-参见 entry.rs:
+linker.ld 定义把 `*(.text.entry)` 段所标注的代码放在刚才所说的起始地址。注意这里的 `ENTRY` 其实标注了 elf 的入口地址，在这里是没有用的。`entry` 代码参见 entry.rs:
 
 ```rust
 #[no_mangle]
@@ -64,11 +62,11 @@ unsafe extern "C" fn _start() -> ! {
 }
 ```
 
-这一段代码就是设立了一个静态分配的初始栈，然后跳转到 `rust_main` 函数，至此就 boot 结束了。
+这一段代码就是设立了一个静态分配的初始栈，然后跳转到 `rust_main` 函数，至此就 boot 结束了。在 `rust_main` 函数中，我们会进行一些最基本的初始化，然后输出 os 各个代码段范围，然后关机退出。接下来分别介绍串口输出和关机的实现方式。
 
 ### 串口输出
 
-由于没有 sbi 的支持，我们需要实现简单的串口输出，当前阶段，我们不需要考虑同步问题。由 [qemu源码](https://github.com/qemu/qemu/blob/master/hw/arm/virt.c#L146)可知，qemu 虚拟的 uart 位于 `0x900_0000` 位置，在此基础上，我们可以实现一个建议的串口驱动：
+不像 riscv 一样有 sbi 的支持，在 arm 上我们需要实现简单的串口输出。由 [qemu源码](https://github.com/qemu/qemu/blob/master/hw/arm/virt.c#L146)可知，qemu 虚拟的 uart 位于 `0x900_0000` 位置，在此基础上，我们可以实现一个简易的串口驱动：
 
 ```rust
 /// pl011.rs
@@ -86,7 +84,7 @@ pub fn console_putchar(c: u8) {
 
 ```
 
-感兴趣的同学也可以实现功能更加完整强大的驱动，可参考 [qemu_plo11驱动](https://crates.io/crates/pl011_qemu)。该驱动完整资料可见 [完整资料](https://documentation-service.arm.com/static/5e8e36c2fd977155116a90b5?token=)。
+感兴趣的同学也可以实现功能更加完整强大的驱动，可参考 [qemu_plo11驱动](https://crates.io/crates/pl011_qemu)。该设备完整资料可见 [完整资料](https://documentation-service.arm.com/static/5e8e36c2fd977155116a90b5?token=)。
 
 ### 关机
 
@@ -94,7 +92,7 @@ arm 特权级分为四层，见下图。
 
 ![arm特权级别](https://documentation-service.arm.com/static/62dac0d5b334256d9ea8fcea?token=)
 
-应用程序位于 el0，os 主要位于 el1，更高特权级该实验很少涉及。qemu boot 我们处在 el1（这一点不同的硬件平台设定可能不一致）。与其他架构类似，当应用程序(el0) 想要调用系统调用时，可以通过 `svc` (supervisor call) 来实现，os 想要调用更高特权级指令的时候，可以通过 `hvc` (hypervisor call) 来实现。ch1 通过 `hvc` 实现关机。
+应用程序位于 el0，os 主要位于 el1，更高特权级该实验很少涉及。在 qemu boot 后我们处在 el1（这一点不同的硬件平台设定可能不一致）。与其他架构类似，当应用程序(el0) 想要调用系统调用时，可以通过 `svc` (supervisor call) 来实现，os 想要调用更高特权级指令的时候，可以通过 `hvc` (hypervisor call) 来实现。ch1 通过 `hvc` 实现关机。
 
 ```rust
 /// psci.rs
