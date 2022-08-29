@@ -84,7 +84,7 @@ static mut BOOT_PT_L1: [PageTableEntry; 512] = [PageTableEntry::empty(); 512];
 unsafe fn init_boot_page_table() {
     // 0级页表的第一项指向以下下一级页表，也就是前 512G 的映射取决于 `BOOT_PT_L1`。
     // 0x0000_0000_0000 ~ 0x0080_0000_0000, table
-    BOOT_PT_L0[0] = PageTableEntry::new_table(PhysAddr::new(BOOT_PT_L1.as_ptr() as usize));、
+    BOOT_PT_L0[0] = PageTableEntry::new_table(PhysAddr::new(BOOT_PT_L1.as_ptr() as usize));
     // 1级页表的第一项直接指向了一个 1G 的大页，且 0x0 指向 0x0，也就是第一个G为一个原地映射。属性为可读可写的 Device 内存。
     // 0x0000_0000_0000..0x0000_4000_0000, block, device memory
     BOOT_PT_L1[0] = PageTableEntry::new_page(
