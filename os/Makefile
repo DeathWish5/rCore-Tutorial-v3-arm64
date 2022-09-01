@@ -61,6 +61,11 @@ run: run-inner
 run-inner: build
 	$(QEMU) $(QEMU_ARGS)
 
+check:
+	cargo fmt --all -- --check
+	cargo check --target $(TARGET)
+	cargo clippy --target $(TARGET)
+
 debug: build
 	@tmux new-session -d \
 		"$(QEMU) $(QEMU_ARGS) -s -S" && \

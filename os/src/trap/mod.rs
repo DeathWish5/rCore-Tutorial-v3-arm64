@@ -11,6 +11,7 @@ use crate::{syscall::syscall, task::CurrentTask};
 
 global_asm!(include_str!("trap.S"));
 
+#[allow(clippy::fn_to_numeric_cast)]
 pub fn init() {
     extern "C" {
         fn exception_vector_base();
