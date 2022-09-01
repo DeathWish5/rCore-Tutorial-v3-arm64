@@ -72,8 +72,14 @@ run: run-inner
 run-inner: build
 	$(QEMU) $(QEMU_ARGS)
 
+
 fmt:
-	cd easy-fs; cargo fmt; cd ../easy-fs-fuse cargo fmt; cd ../os ; cargo fmt; cd ../user; cargo fmt; cd ..
+	cd ../easy-fs; cargo fmt; cd ../easy-fs-fuse cargo fmt; cd ../os ; cargo fmt; cd ../user; cargo fmt; cd ../os
+
+check:
+	cargo fmt --all -- --check
+	cargo check --target $(TARGET)
+	cargo clippy --target $(TARGET)
 
 debug: build
 	@tmux new-session -d \

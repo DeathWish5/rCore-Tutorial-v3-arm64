@@ -56,10 +56,7 @@ pub fn sys_read(fd: usize, mut buf: UserOutPtr<u8>, len: usize) -> isize {
 pub fn sys_open(path: UserInPtr<u8>, flags: u32) -> isize {
     let task = CurrentTask::get();
     let path = path.as_c_str().unwrap();
-    if let Some(inode) = open_file(
-        path,
-        OpenFlags::from_bits(flags).unwrap(),
-    ) {
+    if let Some(inode) = open_file(path, OpenFlags::from_bits(flags).unwrap()) {
         let fd = task.alloc_fd();
         let mut fd_table = task.fd_table.lock();
         fd_table[fd] = Some(inode);
