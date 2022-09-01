@@ -138,7 +138,7 @@ impl<P: ReadPolicy> UserPtr<u8, P> {
     }
 
     pub fn read_c_str(&self) -> Result<String, &'static str> {
-        self.as_c_str().map(|s| String::from(s))
+        self.as_c_str().map(String::from)
     }
 
     pub fn as_str(&self, len: usize) -> Result<&'static str, &'static str> {

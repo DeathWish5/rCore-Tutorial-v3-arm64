@@ -143,10 +143,6 @@ impl MemorySet {
         }
     }
 
-    pub fn pt(&self) -> &PageTable {
-        &self.pt
-    }
-
     pub fn insert(&mut self, area: MapArea) {
         if !area.size > 0 {
             // TODO: check overlap
