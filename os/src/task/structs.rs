@@ -342,7 +342,7 @@ fn push_stack<T>(stack: usize, val: T) -> usize {
     stack as usize
 }
 
-fn push_c_str(stack: usize, val: &String) -> usize {
+fn push_c_str(stack: usize, val: &str) -> usize {
     let len = val.len() + 1;
     let stack = unsafe { core::slice::from_raw_parts_mut((stack - len) as *mut u8, len) };
     for (idx, c) in val.as_bytes().iter().enumerate() {
@@ -382,7 +382,7 @@ impl<'a> CurrentTask<'a> {
                 ustack_top = push_c_str(ustack_top, arg);
                 argv_vec.push(ustack_top);
             }
-            ustack_top = ustack_top & !0xF; // 16 bytes aligned
+            ustack_top &= !0xF; // 16 bytes aligned
             for arg in argv_vec {
                 ustack_top = push_stack(ustack_top, arg);
             }

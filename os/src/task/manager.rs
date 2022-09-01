@@ -134,7 +134,7 @@ impl<T> TaskLockedCell<T> {
 }
 
 pub fn pid2task(id: usize) -> Option<Arc<Task>> {
-    TASK_MAP.lock().get(&id).map(|t| t.clone())
+    TASK_MAP.lock().get(&id).cloned()
 }
 
 pub(super) static TASK_MANAGER: LazyInit<SpinNoIrqLock<TaskManager<SimpleScheduler>>> =
