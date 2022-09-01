@@ -11,6 +11,7 @@ use crate::{batch::run_next_app, syscall::syscall};
 
 global_asm!(include_str!("trap.S"));
 
+#[allow(clippy::fn_to_numeric_cast)]
 pub fn init() {
     extern "C" {
         fn exception_vector_base();
@@ -23,8 +24,8 @@ pub fn init() {
 #[allow(dead_code)]
 enum TrapKind {
     Synchronous = 0,
-    IRQ = 1,
-    FIQ = 2,
+    Irq = 1,
+    Fiq = 2,
     SError = 3,
 }
 
