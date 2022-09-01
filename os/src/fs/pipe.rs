@@ -112,7 +112,7 @@ impl File for Pipe {
     }
     fn read(&self, buf: &mut [u8]) -> usize {
         assert!(self.readable());
-        let mut buf_iter = buf.into_iter();
+        let mut buf_iter = buf.iter_mut();
         let mut read_size = 0usize;
         loop {
             let mut ring_buffer = self.buffer.lock();
@@ -138,7 +138,7 @@ impl File for Pipe {
     }
     fn write(&self, buf: &[u8]) -> usize {
         assert!(self.writable());
-        let mut buf_iter = buf.into_iter();
+        let mut buf_iter = buf.iter();
         let mut write_size = 0usize;
         loop {
             let mut ring_buffer = self.buffer.lock();

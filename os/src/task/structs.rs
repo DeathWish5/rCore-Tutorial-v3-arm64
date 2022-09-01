@@ -100,12 +100,6 @@ impl IdAllocator {
         }
     }
 
-    pub fn new(n: usize) -> Self {
-        Self {
-            id: AtomicUsize::new(n),
-        }
-    }
-
     pub fn alloc(&self) -> usize {
         self.id.fetch_add(1, Ordering::AcqRel)
     }
@@ -576,7 +570,7 @@ fn push_stack<T>(stack: usize, val: T) -> usize {
     stack as usize
 }
 
-fn push_c_str(stack: usize, val: &String) -> usize {
+fn push_c_str(stack: usize, val: &str) -> usize {
     let len = val.len() + 1;
     let stack = unsafe { core::slice::from_raw_parts_mut((stack - len) as *mut u8, len) };
     for (idx, c) in val.as_bytes().iter().enumerate() {
@@ -643,7 +637,7 @@ impl Process {
                 ustack_top = push_c_str(ustack_top, arg);
                 argv_vec.push(ustack_top);
             }
-            ustack_top = ustack_top & !0xF; // 16 bytes aligned
+            ustack_top &= !0xF; // 16 bytes aligned
             for arg in argv_vec {
                 ustack_top = push_stack(ustack_top, arg);
             }
@@ -682,7 +676,6 @@ impl Process {
         if let Some(waited_task) = tasks.get(&tid).as_ref() {
             if let TaskState::Zombie = waited_task.state() {
                 let code = waited_task.exit_code();
-                drop(waited_task);
                 tasks.remove(&tid);
                 code as isize
             } else {

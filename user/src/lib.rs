@@ -57,7 +57,7 @@ pub extern "C" fn _start(argc: usize, argv: usize) -> ! {
 
 #[linkage = "weak"]
 #[no_mangle]
-fn main(argc: usize, argv: &[&str]) -> i32 {
+fn main(_argc: usize, _argv: &[&str]) -> i32 {
     panic!("Cannot find main!");
 }
 

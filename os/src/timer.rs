@@ -40,6 +40,7 @@ pub fn add_timer(expire_ms: usize, task: Arc<Task>) {
     timers.push(TimerCondVar { expire_ms, task });
 }
 
+#[allow(dead_code)]
 pub fn remove_timer(task: Arc<Task>) {
     let mut timers = TIMERS.lock();
     let mut temp = BinaryHeap::<TimerCondVar>::new();

@@ -3,7 +3,6 @@
 
 extern crate alloc;
 
-#[macro_use]
 extern crate user_lib;
 use user_lib::console::getchar;
 use user_lib::*;

@@ -44,7 +44,7 @@ impl<S: Scheduler> TaskManager<S> {
         if let Some(next_task) = self.scheduler.pick_next_task() {
             self.switch_to(curr_task, next_task);
         } else {
-            self.switch_to(curr_task, PerCpu::idle_task().clone());
+            self.switch_to(curr_task, PerCpu::idle_task());
         }
     }
 
@@ -129,7 +129,7 @@ impl<T> TaskLockedCell<T> {
 }
 
 pub fn pid2proc(id: usize) -> Option<Arc<Process>> {
-    PROC_MAP.lock().get(&id).map(|t| t.clone())
+    PROC_MAP.lock().get(&id).cloned()
 }
 
 pub(super) static TASK_MANAGER: LazyInit<SpinNoIrqLock<TaskManager<SimpleScheduler>>> =
