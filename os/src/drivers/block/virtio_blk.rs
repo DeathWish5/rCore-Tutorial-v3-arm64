@@ -3,12 +3,12 @@ use crate::mm::{frame_alloc, phys_to_virt, virt_to_phys, PhysFrame, PAGE_SIZE};
 use crate::sync::Mutex;
 use alloc::vec::Vec;
 use lazy_static::*;
-use virtio_drivers::{VirtIOBlk, VirtIOHeader};
+use virtio_drivers::{Hal, VirtIOBlk, VirtIOHeader};
 
 ///REF: https://github.com/qemu/qemu/blob/master/hw/arm/virt.c#L157
 const VIRTIO_BASE: usize = 0x0a00_0000;
 
-pub struct VirtIOBlock(Mutex<VirtIOBlk<'static>>);
+pub struct VirtIOBlock(Mutex<VirtIOBlk<'static, VirtioHal>>);
 
 lazy_static! {
     static ref QUEUE_FRAMES: Mutex<Vec<PhysFrame>> = Mutex::new(Vec::new());
@@ -34,38 +34,42 @@ impl VirtIOBlock {
     pub fn new() -> Self {
         unsafe {
             Self(Mutex::new(
-                VirtIOBlk::new(&mut *(phys_to_virt(VIRTIO_BASE) as *mut VirtIOHeader)).unwrap(),
+                VirtIOBlk::<VirtioHal>::new(&mut *(phys_to_virt(VIRTIO_BASE) as *mut VirtIOHeader))
+                    .unwrap(),
             ))
         }
     }
 }
 
-#[no_mangle]
-pub extern "C" fn virtio_dma_alloc(pages: usize) -> usize {
-    let mut paddr = 0;
-    for i in 0..pages {
-        let frame = frame_alloc().unwrap();
-        if i == 0 {
-            paddr = frame.start_paddr().as_usize();
+pub struct VirtioHal;
+
+use virtio_drivers::{PhysAddr, VirtAddr};
+
+impl Hal for VirtioHal {
+    fn dma_alloc(pages: usize) -> PhysAddr {
+        let mut paddr = 0;
+        for i in 0..pages {
+            let frame = frame_alloc().unwrap();
+            if i == 0 {
+                paddr = frame.start_paddr().as_usize();
+            }
+            assert_eq!(frame.start_paddr().as_usize(), paddr + i * PAGE_SIZE);
+            QUEUE_FRAMES.lock().push(frame);
         }
-        assert_eq!(frame.start_paddr().as_usize(), paddr + i * PAGE_SIZE);
-        QUEUE_FRAMES.lock().push(frame);
+        paddr
     }
-    paddr
-}
 
-#[no_mangle]
-pub extern "C" fn virtio_dma_dealloc(_pa: usize, _pages: usize) -> i32 {
-    // TODO
-    0
-}
+    fn dma_dealloc(_paddr: PhysAddr, _pages: usize) -> i32 {
+        // TODO
+        // pop from QUEUE_FRAMES
+        0
+    }
 
-#[no_mangle]
-pub extern "C" fn virtio_phys_to_virt(paddr: usize) -> usize {
-    phys_to_virt(paddr)
-}
+    fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
+        phys_to_virt(paddr)
+    }
 
-#[no_mangle]
-pub extern "C" fn virtio_virt_to_phys(vaddr: usize) -> usize {
-    virt_to_phys(vaddr)
+    fn virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
+        virt_to_phys(vaddr)
+    }
 }
