@@ -254,7 +254,6 @@ pub fn yield_task() {
 /// see: https://github.com/rust-lang/rfcs/blob/master/text/1201-naked-fns.md
 /// see: https://doc.rust-lang.org/nightly/reference/inline-assembly.html
 /// see: https://doc.rust-lang.org/nightly/rust-by-example/unsafe/asm.html
-#[allow(undefined_naked_function_abi)]
 #[naked]
 #[no_mangle]
 unsafe fn switch(old: *mut TaskContext, new: *const TaskContext) {
