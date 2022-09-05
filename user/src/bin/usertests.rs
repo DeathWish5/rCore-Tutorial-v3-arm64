@@ -29,8 +29,20 @@ static TESTS: &[&str] = &[
     "threads\0",
     "mpsc_sem\0",
     "stackless_coroutine\0",
+    "stackful_coroutine\0",
     "sync_sem\0",
     "test_condvar\0",
+    "race_adder_arg\0",
+    "race_adder_atomic\0",
+    "race_adder_mutex_blocking\0",
+    "race_adder_mutex_spin\0",
+    // fail tests
+    "priv_csr\0",
+    "priv_inst\0",
+    "store_fault\0",
+    "stack_overflow\0",
+    "race_adder\0",
+    "race_adder_loop\0",
 ];
 
 use user_lib::{exec, fork, waitpid};
