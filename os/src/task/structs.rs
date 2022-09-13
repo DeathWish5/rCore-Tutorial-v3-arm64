@@ -273,6 +273,14 @@ impl Process {
             }
         }
         *t.fd_table.lock() = new_fd_table;
+        // // copy signal actions
+        // let mut actions = t.signal_actions.lock();
+        // let old_actions = self.signal_actions.lock();
+        // for (idx, action) in old_actions.table.iter().enumerate() {
+        //     actions.table[idx] = *action;
+        // }
+        // drop(old_actions);
+        // drop(actions);
         self.add_child(&t);
         t
     }

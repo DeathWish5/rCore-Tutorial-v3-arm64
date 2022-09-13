@@ -147,7 +147,7 @@ fn final_sig_test() {
         }
     } else {
         sleep(1000);
-        if kill(pid as usize, 1 << 14) < 0 {
+        if kill(pid as usize, 14) < 0 {
             println!("Kill failed!");
             exit(-1);
         }

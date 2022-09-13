@@ -21,6 +21,8 @@ pub fn sys_kill(pid: usize, signum: i32) -> isize {
             if count > 0 {
                 return 0;
             }
+            // FIX ME: bug from rCore-tutorial-v3
+            return 0;
         }
     }
     -1

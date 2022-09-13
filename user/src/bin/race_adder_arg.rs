@@ -29,13 +29,10 @@ unsafe fn f(count: usize) -> ! {
 #[no_mangle]
 pub fn main(argc: usize, argv: &[&str]) -> i32 {
     let count: usize;
-    if argc == 1 {
-        count = THREAD_COUNT;
-    } else if argc == 2 {
+    if argc == 2 {
         count = argv[1].to_string().parse::<usize>().unwrap();
     } else {
-        println!("ERROR in argv");
-        exit(-1);
+        count = THREAD_COUNT;
     }
 
     let start = get_time();
